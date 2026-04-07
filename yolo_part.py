@@ -1,7 +1,7 @@
 
 from ultralytics import YOLO
 
-model = YOLO('yolov8n.pt')
+model = YOLO('yolov8n.pt')#小而美，确信
 
 results = model.train(
     data=r"C:\mypy\recog_ai\data\data.yaml",
