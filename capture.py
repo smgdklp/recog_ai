@@ -86,6 +86,9 @@ class Capture:
                 if self.rect[1] < 0:
                     self.rect = (self.rect[0], 0, self.rect[2], self.rect[3])
                 with self.camera_lock:
+                    if self.camera:
+                        self.camera.stop()
+                        del self.camera
                     self.camera = dxcam.create(region=self.rect, output_idx=0, backend="dxgi")
         else:
             raise RuntimeError("窗口句柄为空")
