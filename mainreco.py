@@ -88,8 +88,6 @@ class Mainreco:
 #这玩意是标记验证测试
 if __name__ == "__main__":
     import cv2
-    import numpy as np
-    from PIL import Image, ImageDraw
     import os
     from ultralytics import YOLO
     
