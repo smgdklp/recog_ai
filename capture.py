@@ -10,8 +10,8 @@ from PIL import Image
 import win32api
 
 class Frame:
-    def __init__(self, time, timestamp, img):
-        self.time = time
+    def __init__(self, timestamp, img):
+        # 输入：timestamp,时间戳；img，帧的数组信息
         self.timestamp = timestamp
         self.img = img
 
@@ -104,12 +104,8 @@ class Capture:
         
     def pull(self):
         timestamp = time.time()
-        self.frame = Frame(time.time(), timestamp, self.img)
-        try:
-            self.q.put(self.frame, block=False)
-        except queue.Full:
-            pass
-
+        self.frame = Frame(timestamp, self.img)
+        self.q.put(self.frame)
     def _time(self):
         while self.is_life:
             sleep_time = 1.0 / self.fps
