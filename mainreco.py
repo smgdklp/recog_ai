@@ -1,6 +1,6 @@
 import threading
 import time
-import queue
+
 from ultralytics import YOLO
 import cv2
 
