@@ -64,8 +64,6 @@ class MoveReco:
 
         self.last_light_direct = None   # 缓存光流图方向阵（last -> next）
         self.next_target_id = 0          # 用于生成唯一标识
-        self.last_timestamp = None       # 上一帧时间戳，用于计算实际dt
-        self.pending_ig_xy = None        # 缓存等待匹配的忽略区域
 
 
     def start(self):
@@ -85,7 +83,6 @@ class MoveReco:
         数据更新：从队列获取数据，交替接收帧和忽略区域
         Frame 和 Result(忽略区域) 成对出现，顺序：Frame -> Result -> Frame -> Result ...
         
-        输入：无（从 self.in_queue 获取）
         输出：更新 self.pre, self.last, self.next
         """
         # 滚动更新: pre 丢弃, last 变 pre, next 变 last
@@ -100,24 +97,23 @@ class MoveReco:
             self.last['ob'] = self.next['ob']
 
         # 从队列获取新帧（阻塞等待）
-        frame_data = self.in_queue.get()
+        data= self.in_queue.get()
         if not isinstance(frame_data, Frame):
             raise TypeError(f"期望 Frame 类型，实际得到 {type(frame_data)}")
         
         # 从队列获取对应的忽略区域（阻塞等待）
-        ig_data = self.in_queue.get()
+        frame_data=data[0]
+        ig_data =data[1]
         if not isinstance(ig_data, Result):
             raise TypeError(f"期望 Result(忽略区域) 类型，实际得到 {type(ig_data)}")
         
-        ig_xy = ig_data.xy if hasattr(ig_data, 'xy') else None
+        ig_xy = ig_data.xy
 
         img = frame_data.img
-        timestamp = frame_data.timestamp if hasattr(frame_data, 'timestamp') else time.time()
+        timestamp = frame_data.timestamp
 
         # 记录时间戳用于速度计算
-        if self.last_timestamp is None:
-            self.last_timestamp = timestamp
-
+        self.next["timestamp"]=timestamp
         # 预处理图像（使用 ig_xy 作为忽略区域）
         processed_img = self._preprocess_image(img, ig_xy)
         
@@ -127,7 +123,7 @@ class MoveReco:
         self.next['ob'] = None
 
 
-    def _preprocess_image(self, img, xy):
+    def _preprocess_image_(self, img, xy):
         """
         图像预处理：灰度化、归一化、阈值过滤、忽略区域处理
         
@@ -159,7 +155,7 @@ class MoveReco:
         输出：self.last_light_direct (光流场)
         """
         if self.last['frame'] is None or self.next['frame'] is None:
-            return
+            return None
 
         pre_img = self.last['frame'].img
         last_img = self.next['frame'].img
@@ -174,7 +170,7 @@ class MoveReco:
 
     def _connected_components(self, img):
         """
-        对二值图像做连通域分析
+        对二值图像做连通域分析包装成cluster
         
         输入：img(灰度图)
         输出：labels(标签矩阵), stats(统计信息), centroids(质心), num_labels(标签数量)
