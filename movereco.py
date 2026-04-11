@@ -4,17 +4,18 @@ import threading
 import time
 
 '''
-就是用到三帧，主要用相邻来分割实体。
-生成的两张光流图，用来分割前两张的识别所得的物体的，重合物体。
+用到三帧，主要用相邻来分割实体。
+生成两张光流图，用来分割前两张的识别所得的物体的重合物体。
 
 长难句准备，也就是缓存三帧
-缓存三帧，更新pre,last,nest，pre是最旧的，丢了
-最新帧connectedComponentsWithStats，分离lables出不同物体，保存到cluster[特异标识,位置掩码]
-做last和nest的光流，last光流图保存移动矢量图，
-nest和last光流图
-last.cluster每个位置掩码用last光流图帧做的二次分割，按照angle_diff = lambda a, b: min(abs(a - b), 360 - abs(a - b))，如果存在大于10个的异类则分割。分割重合的物体，因为光流图会有空心，所以按照能囊括同向点的最大外接圆且在掩码上有值的分割，分割的物体几个物体赋予新的特异标识，删掉原来的物体，所有保存为cluster[特异标识,[[方向，x,y],....的点集]]
-然后把分割的所有cluster转化为（”特异标识“：字典{最大外接圆半径，最大外接圆坐标，方向，速度}），方向用平均角度，保存到ob
-根据per.ob内物体圆心位置,速度,和速度方向和timestemp差估计last.ob位置，如果相差欧式距离为10则取距离最小的点继承特异标识
+缓存三帧，更新pre,last,next，pre是最旧的，丢了
+最新帧connectedComponentsWithStats，分离labels出不同物体，保存到cluster[特异标识,位置掩码]
+做last和next的光流，last光流图保存移动矢量图
+last.cluster每个位置掩码用last光流图做二次分割，按照angle_diff = lambda a, b: min(abs(a - b), 360 - abs(a - b))，
+如果存在大于阈值个数的异类则分割。分割重合的物体，因为光流图会有空心，所以按照能囊括同向点的最大外接圆且在掩码上有值的分割，
+分割的物体赋予新的特异标识，删掉原来的物体，所有保存为cluster[特异标识,[[方向，x,y],....的点集]]
+然后把分割的所有cluster转化为（"特异标识"：字典{最大外接圆半径，最大外接圆坐标，方向，速度}），方向用平均角度，保存到ob
+根据pre.ob内物体圆心位置,速度,和速度方向和timestamp差估计last.ob位置，如果相差欧式距离为10则取距离最小的点继承特异标识
 '''
 
 class Result:
@@ -23,6 +24,7 @@ class Result:
         self.timestamp = timestamp
         # objects 字典: {"特异标识": {"center": (x,y), "radius": r, "direction": deg, "velocity": (vx,vy)}}
         self.objects = objects if objects is not None else {}
+        self.xy = None  # 兼容忽略区域传递
 
 
 class Frame:
@@ -51,9 +53,9 @@ class MoveReco:
         self.out_queue = out_queue
 
         # 缓存三帧数据: pre(最旧), last(当前), next(最新)
-        self.pre = {'frame': None, 'cluster': None, 'ob': None}
-        self.last = {'frame': None, 'cluster': None, 'ob': None}
-        self.next = {'frame': None, 'cluster': None, 'ob': None}
+        self.pre = {'frame': None, 'cluster': None, 'ob': None, 'timestamp': None}
+        self.last = {'frame': None, 'cluster': None, 'ob': None, 'timestamp': None}
+        self.next = {'frame': None, 'cluster': None, 'ob': None, 'timestamp': None}
 
         self.fps = fps
         self.is_life = True
@@ -64,6 +66,10 @@ class MoveReco:
 
         self.last_light_direct = None   # 缓存光流图方向阵（last -> next）
         self.next_target_id = 0          # 用于生成唯一标识
+
+        # 临时变量，避免重复创建
+        self._temp_mask = None
+        self._temp_binary = None
 
 
     def start(self):
@@ -77,7 +83,27 @@ class MoveReco:
         self.next_target_id += 1
         return self.next_target_id - 1
 
+    def __preprocess_image(self, img, xy):
+        """
+        图像预处理：灰度化、归一化、阈值过滤、忽略区域处理
+        
+        输入：img(BGR三通道), xy(忽略区域坐标 [x1,y1,x2,y2])
+        输出：processed_img(灰度图 float32 0-1)
+        """
 
+        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY).astype(np.float32) / 255.0
+
+        gray[gray < self.gray_threshold] = 0
+
+        if xy and len(xy) == 4:
+            x1, y1, x2, y2 = [int(round(v)) for v in xy]
+            w = x2 - x1
+            h = y2 - y1
+            if w > 0 and h > 0:
+                gray[y1:y1+h, x1:x1+w] = 0
+
+        return gray
+    
     def _dataup(self):
         """
         数据更新：从队列获取数据，交替接收帧和忽略区域
@@ -90,20 +116,21 @@ class MoveReco:
             self.pre['frame'] = self.last['frame']
             self.pre['cluster'] = self.last['cluster']
             self.pre['ob'] = self.last['ob']
+            self.pre['timestamp'] = self.last['timestamp']
 
         if self.next['frame'] is not None:
             self.last['frame'] = self.next['frame']
             self.last['cluster'] = self.next['cluster']
             self.last['ob'] = self.next['ob']
+            self.last['timestamp'] = self.next['timestamp']
 
         # 从队列获取新帧（阻塞等待）
-        data= self.in_queue.get()
+        frame_data = self.in_queue.get()
         if not isinstance(frame_data, Frame):
             raise TypeError(f"期望 Frame 类型，实际得到 {type(frame_data)}")
         
         # 从队列获取对应的忽略区域（阻塞等待）
-        frame_data=data[0]
-        ig_data =data[1]
+        ig_data = self.in_queue.get()
         if not isinstance(ig_data, Result):
             raise TypeError(f"期望 Result(忽略区域) 类型，实际得到 {type(ig_data)}")
         
@@ -112,40 +139,12 @@ class MoveReco:
         img = frame_data.img
         timestamp = frame_data.timestamp
 
-        # 记录时间戳用于速度计算
-        self.next["timestamp"]=timestamp
-        # 预处理图像（使用 ig_xy 作为忽略区域）
-        processed_img = self._preprocess_image(img, ig_xy)
-        
-        # 存入 next 帧
+        self.next['timestamp'] = timestamp
+        processed_img = self.__preprocess_image(img, ig_xy)
+
         self.next['frame'] = MoveFrame(processed_img, ig_xy, timestamp)
         self.next['cluster'] = None
         self.next['ob'] = None
-
-
-    def _preprocess_image_(self, img, xy):
-        """
-        图像预处理：灰度化、归一化、阈值过滤、忽略区域处理
-        
-        输入：img(BGR三通道), xy(忽略区域坐标 [x1,y1,x2,y2])
-        输出：processed_img(灰度图 float32 0-1)
-        """
-        # 转化为灰度图，每个元素除以255，float32
-        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY).astype(np.float32) / 255.0
-
-        # 灰度阈值过滤
-        gray[gray < self.gray_threshold] = 0
-
-        # 处理忽略区域（使用 ig_xy）
-        if xy and len(xy) == 4:
-            x1, y1, x2, y2 = [int(round(v)) for v in xy]
-            w = x2 - x1
-            h = y2 - y1
-            if w > 0 and h > 0:
-                gray[y1:y1+h, x1:x1+w] = 0
-
-        return gray
-
 
     def _calc_optical_flow(self):
         """
@@ -155,7 +154,8 @@ class MoveReco:
         输出：self.last_light_direct (光流场)
         """
         if self.last['frame'] is None or self.next['frame'] is None:
-            return None
+            self.last_light_direct = None
+            return
 
         pre_img = self.last['frame'].img
         last_img = self.next['frame'].img
@@ -170,16 +170,16 @@ class MoveReco:
 
     def _connected_components(self, img):
         """
-        对二值图像做连通域分析包装成cluster
+        对二值图像做连通域分析，结果存入实例变量
         
         输入：img(灰度图)
-        输出：labels(标签矩阵), stats(统计信息), centroids(质心), num_labels(标签数量)
+        输出：self._temp_labels, self._temp_stats, self._temp_centroids, self._temp_num_labels
         """
         binary = (img > 0).astype(np.uint8) * 255
-        num_labels, labels, stats, centroids = cv2.connectedComponentsWithStats(
+        self._temp_labels, self._temp_stats, self._temp_centroids = cv2.connectedComponentsWithStats(
             binary, connectivity=8
-        )
-        return labels, stats, centroids, num_labels
+        )[:3]
+        self._temp_num_labels = self._temp_labels.max() if self._temp_labels.size > 0 else 0
 
 
     def _segment_connected_components(self, target_frame_key='next'):
@@ -194,46 +194,61 @@ class MoveReco:
             return
 
         img = frame_data['frame'].img
-        labels, stats, centroids, num_labels = self._connected_components(img)
-
+        self._connected_components(img)
+        
         cluster = {}
-        for i in range(1, num_labels):
-            mask = (labels == i)
+        for i in range(1, self._temp_num_labels + 1):
+            mask = (self._temp_labels == i)
             y_coords, x_coords = np.where(mask)
-            if len(y_coords) < self.cluster_threshold:  # 忽略太小的区域
+            if len(y_coords) < self.cluster_threshold:
                 continue
 
             points = list(zip(x_coords.tolist(), y_coords.tolist()))
             target_id = self._get_new_id()
+            
+            # 获取质心
+            centroid_x = self._temp_centroids[i][0] if i < len(self._temp_centroids) else sum(x_coords)/len(x_coords)
+            centroid_y = self._temp_centroids[i][1] if i < len(self._temp_centroids) else sum(y_coords)/len(y_coords)
+            
+            # 获取边界框
+            stats = self._temp_stats[i] if i < len(self._temp_stats) else None
+            if stats is not None:
+                bbox = (stats[cv2.CC_STAT_LEFT], stats[cv2.CC_STAT_TOP],
+                       stats[cv2.CC_STAT_WIDTH], stats[cv2.CC_STAT_HEIGHT])
+            else:
+                bbox = (min(x_coords), min(y_coords), max(x_coords)-min(x_coords), max(y_coords)-min(y_coords))
+            
             cluster[target_id] = {
                 'mask': mask,
                 'points': points,
-                'center': (centroids[i][0], centroids[i][1]),
-                'bbox': (stats[i, cv2.CC_STAT_LEFT], stats[i, cv2.CC_STAT_TOP],
-                         stats[i, cv2.CC_STAT_WIDTH], stats[i, cv2.CC_STAT_HEIGHT]),
+                'center': (centroid_x, centroid_y),
+                'bbox': bbox,
                 'velocity': (0, 0),
-                'direction': 0
+                'direction': 0,
+                'radius': 0
             }
 
         frame_data['cluster'] = cluster
 
 
-    def _extract_points_with_flow(self, mask, flow):
+    def _extract_points_with_flow(self, mask):
         """
-        从掩码区域提取光流信息
+        从掩码区域提取光流信息，结果存入实例变量
         
-        输入：mask(布尔掩码), flow(光流场)
-        输出：points列表 [(angle, x, y, vx, vy), ...]
+        输入：mask(布尔掩码)
+        输出：self._temp_points (列表 [(angle, x, y, vx, vy), ...])
         """
-        if flow is None or mask is None:
-            return []
+        if self.last_light_direct is None or mask is None:
+            self._temp_points = []
+            return
 
         y_coords, x_coords = np.where(mask)
         if len(y_coords) == 0:
-            return []
+            self._temp_points = []
+            return
 
-        vx_vals = flow[y_coords, x_coords, 0]
-        vy_vals = flow[y_coords, x_coords, 1]
+        vx_vals = self.last_light_direct[y_coords, x_coords, 0]
+        vy_vals = self.last_light_direct[y_coords, x_coords, 1]
 
         # 计算角度
         angles = np.arctan2(vy_vals, vx_vals) * 180 / np.pi
@@ -243,32 +258,35 @@ class MoveReco:
         for i in range(len(y_coords)):
             points.append((angles[i], int(x_coords[i]), int(y_coords[i]), 
                           float(vx_vals[i]), float(vy_vals[i])))
-        return points
+        self._temp_points = points
 
 
-    def _angle_clustering(self, points, angle_th):
+    def _angle_clustering(self):
         """
-        方向聚类：按角度分组
+        方向聚类：按角度分组，结果存入 self._temp_angle_groups
         
-        输入：points列表, 角度阈值
-        输出：分组后的列表
+        输入：self._temp_points
+        输出：self._temp_angle_groups (分组后的列表)
         """
+        points = self._temp_points
         if not points:
-            return []
+            self._temp_angle_groups = []
+            return
+        
         points.sort(key=lambda p: p[0])
         angle_diff = lambda a, b: min(abs(a - b), 360 - abs(a - b))
 
-        clusters = []
-        cur_cluster = [points[0]]
+        groups = []
+        cur_group = [points[0]]
         for i in range(1, len(points)):
-            if angle_diff(points[i][0], points[i-1][0]) > angle_th:
-                clusters.append(cur_cluster)
-                cur_cluster = [points[i]]
+            if angle_diff(points[i][0], points[i-1][0]) > self.angle_threshold:
+                groups.append(cur_group)
+                cur_group = [points[i]]
             else:
-                cur_cluster.append(points[i])
-        if cur_cluster:
-            clusters.append(cur_cluster)
-        return clusters
+                cur_group.append(points[i])
+        if cur_group:
+            groups.append(cur_group)
+        self._temp_angle_groups = groups
 
 
     def _reconstruct_mask_from_points(self, points, shape):
@@ -285,25 +303,26 @@ class MoveReco:
         return mask
 
 
-    def _split_single_cluster_by_flow(self, target_data, flow):
+    def _split_single_cluster_by_flow(self, target_data):
         """
         根据光流方向分割同一连通域内方向不同的点
         
-        输入：target_data(单个物体数据), flow(光流场)
-        输出：分割后的物体列表
+        输入：target_data(单个物体数据)
+        输出：self._temp_split_objects (分割后的物体列表)
         """
-        points = self._extract_points_with_flow(target_data['mask'], flow)
-        if len(points) < self.cluster_threshold:
-            return [target_data]
+        self._extract_points_with_flow(target_data['mask'])
+        if len(self._temp_points) < self.cluster_threshold:
+            self._temp_split_objects = [target_data]
+            return
 
-        # 方向聚类
-        angle_groups = self._angle_clustering(points, self.angle_threshold)
-        if len(angle_groups) <= 1:
-            return [target_data]
+        self._angle_clustering()
+        if len(self._temp_angle_groups) <= 1:
+            self._temp_split_objects = [target_data]
+            return
 
         # 多个方向，需要分割
         new_objects = []
-        for group in angle_groups:
+        for group in self._temp_angle_groups:
             if len(group) < 5:
                 continue
 
@@ -335,11 +354,12 @@ class MoveReco:
                 'center': (center_x, center_y),
                 'radius': radius,
                 'velocity': (avg_vx, avg_vy),
-                'direction': direction
+                'direction': direction,
+                'bbox': target_data.get('bbox', (0, 0, 0, 0))
             }
             new_objects.append(new_obj)
 
-        return new_objects if new_objects else [target_data]
+        self._temp_split_objects = new_objects if new_objects else [target_data]
 
 
     def _split_by_flow_direction(self):
@@ -354,14 +374,13 @@ class MoveReco:
         if self.last['cluster'] is None or self.last_light_direct is None:
             return
 
-        flow = self.last_light_direct
         new_cluster = {}
 
         for target_id, target_data in self.last['cluster'].items():
             # 对该物体的掩码区域进行光流方向分割
-            split_objects = self._split_single_cluster_by_flow(target_data, flow)
+            self._split_single_cluster_by_flow(target_data)
 
-            for obj in split_objects:
+            for obj in self._temp_split_objects:
                 new_id = self._get_new_id()
                 new_cluster[new_id] = {
                     'mask': obj['mask'],
@@ -377,7 +396,7 @@ class MoveReco:
 
     def _cluster_to_ob(self, cluster):
         """
-        将 cluster 转化为 ob 格式（输出用）
+        将 cluster 转化为 ob 格式（输出用），直接修改传入的 ob 字典
         
         输入：cluster(物体字典，含完整信息)
         输出：ob(精简格式 {"id": {"center": (x,y), "radius": r, "direction": deg, "velocity": (vx,vy)}})
@@ -400,20 +419,15 @@ class MoveReco:
         根据 pre['ob'] 预测位置，与 last['ob'] 匹配
         如果预测位置与实际位置欧氏距离小于阈值，则继承特异标识
         
-        输入：self.pre['ob'], self.last['ob'], self.last['frame'] 时间戳
+        输入：self.pre['ob'], self.last['ob'], self.pre['timestamp'], self.last['timestamp']
         输出：更新 self.last['ob'] 中的 ID（继承后的标识）
         """
         if self.pre['ob'] is None or self.last['ob'] is None:
             return
 
         # 计算实际时间差
-        if self.last['frame'] is None or self.pre['frame'] is None:
-            dt = 1.0 / self.fps
-        else:
-            dt = self.last['frame'].timestamp - self.pre['frame'].timestamp
-            if dt <= 0:
-                dt = 1.0 / self.fps
-
+       
+        dt = self.last['timestamp'] - self.pre['timestamp']
         # 对 pre 中每个物体，预测其在当前帧的位置
         predictions = []
         for obj_id, obj_data in self.pre['ob'].items():
@@ -427,7 +441,9 @@ class MoveReco:
         last_ob = self.last['ob'].copy()
         matched_pre_ids = set()
         matched_last_ids = set()
+        new_last_ob = {}
 
+        # 先处理匹配的物体
         for pre_id, pred_pos in predictions:
             best_match_id = None
             best_dist = 15.0  # 距离阈值（像素）
@@ -444,27 +460,34 @@ class MoveReco:
             if best_match_id is not None:
                 matched_pre_ids.add(pre_id)
                 matched_last_ids.add(best_match_id)
-                self.last['ob'][pre_id] = self.last['ob'].pop(best_match_id)
+                # 继承 pre 的 ID，保留 last 的数据
+                new_last_ob[pre_id] = last_ob[best_match_id]
+            else:
+                # 没有匹配的，保留原 pre_id？不，pre 是上一帧的，不应该出现在当前帧
+                pass
+
+        # 添加未匹配的 last 物体（新出现的物体）
+        for last_id, last_data in last_ob.items():
+            if last_id not in matched_last_ids:
+                new_last_ob[last_id] = last_data
+
+        self.last['ob'] = new_last_ob
 
 
     def _update_ob_velocity(self):
         """
-        更新 last['ob'] 中物体的速度
+        更新 next['ob'] 中物体的速度
         通过比较 last 和 next 的位置差计算实际速度
         
-        输入：self.last['ob'], self.next['ob'], 时间差
+        输入：self.last['ob'], self.next['ob'], self.last['timestamp'], self.next['timestamp']
         输出：更新 self.next['ob'] 中的 velocity
         """
         if self.last['ob'] is None or self.next['ob'] is None:
             return
 
         # 计算时间差
-        if self.last['frame'] is None or self.next['frame'] is None:
-            dt = 1.0 / self.fps
-        else:
-            dt = self.next['frame'].timestamp - self.last['frame'].timestamp
-            if dt <= 0:
-                dt = 1.0 / self.fps
+      
+        dt = self.next['timestamp'] - self.last['timestamp']
 
         for next_id, next_data in self.next['ob'].items():
             best_match_id = None
@@ -503,39 +526,37 @@ class MoveReco:
         
         输出：self.next['ob']（最终输出）
         """
-        # 1. 对 last 帧做连通域分割
-        self._segment_connected_components('last')
+        # 对 last 帧做连通域分割
+        if self.last['frame'] is not None:
+            self._segment_connected_components('last')
+            
+            # 计算光流（last -> next）
+            self._calc_optical_flow()
+            
+            # 用光流分割 last['cluster']
+            if self.last['cluster'] is not None:
+                self._split_by_flow_direction()
+            
+            # last['cluster'] 转化为 last['ob']
+            self.last['ob'] = self._cluster_to_ob(self.last['cluster'])
+            
+            # ID 继承（用 pre 和 last 匹配）
+            self._predict_and_match_ids()
         
-        # 2. 计算光流（last -> next）
-        self._calc_optical_flow()
-        
-        # 3. 用光流分割 last['cluster']
-        self._split_by_flow_direction()
-        
-        # 4. last['cluster'] 转化为 last['ob']
-        self.last['ob'] = self._cluster_to_ob(self.last['cluster'])
-        
-        # 5. ID 继承（用 pre 和 last 匹配）
-        self._predict_and_match_ids()
-        
-        # 6. 对 next 帧做连通域分割
-        self._segment_connected_components('next')
-        
-        # 7. next['cluster'] 转化为 next['ob']
-        self.next['ob'] = self._cluster_to_ob(self.next['cluster'])
-        
-        # 8. 更新速度信息（用 last 和 next 匹配）
-        self._update_ob_velocity()
+        # 对 next 帧做连通域分割
+        if self.next['frame'] is not None:
+            self._segment_connected_components('next')
+            
+            # next['cluster'] 转化为 next['ob']
+            self.next['ob'] = self._cluster_to_ob(self.next['cluster'])
+            
+            # 更新速度信息（用 last 和 next 匹配）
+            self._update_ob_velocity()
 
 
     def _run(self):
         """
         主运行循环：控制处理帧率上限，串联完整工作流
-        
-        工作流周期：
-        - 数据更新（滚动缓存 + 获取新帧）
-        - 识别处理
-        - 输出结果
         """
         last_time = time.time()
         min_interval = 1.0 / self.fps
@@ -545,25 +566,19 @@ class MoveReco:
             elapsed = current_time - last_time
 
             if elapsed >= min_interval:
-                # 1. 更新数据（三帧滚动 + 获取新帧和忽略区域）
                 self._dataup()
-
-                # 2. 识别处理
                 self._reco()
-
-                # 3. 构建输出结果
-                result = Result(
-                    timestamp=self.next['frame'].timestamp if self.next['frame'] else None,
-                    objects=self.next['ob']
-                )
-                self.pre_result = result
-
-                # 4. 输出到队列
-                if self.pre_result is not None:
-                    try:
-                        self.out_queue.put(self.pre_result, block=False)
-                    except:
-                        pass
+                if self.next['frame'] is not None:
+                    result = Result(
+                        timestamp=self.next['frame'].timestamp,
+                        objects=self.next['ob']
+                    )
+                    self.pre_result = result
+                    if self.pre_result is not None:
+                        try:
+                            self.out_queue.put(self.pre_result, block=False)
+                        except:
+                            pass
 
                 last_time = current_time
             else:
