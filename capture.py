@@ -143,7 +143,7 @@ if __name__ == "__main__":
                 pass
             except Exception as e:
                 print(f"保存出错: {e}")
-            time.sleep(3)
+            time.sleep(0.33)
     
     time_thread, run_thread = a.start()
     save_thread = threading.Thread(target=save_frames, daemon=True)
