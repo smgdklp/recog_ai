@@ -4,89 +4,66 @@ import threading
 import time
 
 '''
-用到三帧，主要用相邻来分割实体。
-生成两张光流图，用来分割前两张的识别所得的物体的重合物体。
+用到三帧，当前帧主要用相邻来分割实体。前一帧信息用来遗传id，追踪同一个物体。后一帧信息用来做光流图，根据方向向量，切割同一个物体的重叠物体
+用到三帧，当前帧主要用相邻来分割实体。前一帧信息用来遗传id，追踪同一个物体。后一帧信息用来做光流图，根据方向向量，切割同一个物体的重叠物体
 
-长难句准备，也就是缓存三帧
-缓存三帧，更新pre,last,next，pre是最旧的，丢了
-最新帧connectedComponentsWithStats，分离labels出不同物体，保存到cluster[特异标识,位置掩码]
-做last和next的光流，last光流图保存移动矢量图
-last.cluster每个位置掩码用last光流图做二次分割，按照angle_diff = lambda a, b: min(abs(a - b), 360 - abs(a - b))，
-如果存在大于阈值个数的异类则分割。分割重合的物体，因为光流图会有空心，所以按照能囊括同向点的最大外接圆且在掩码上有值的分割，
-分割的物体赋予新的特异标识，删掉原来的物体，所有保存为cluster[特异标识,[[方向，x,y],....的点集]]
-然后把分割的所有cluster转化为（"特异标识"：字典{最大外接圆半径，最大外接圆坐标，方向，速度}），方向用平均角度，保存到ob
-根据pre.ob内物体圆心位置,速度,和速度方向和timestamp差估计last.ob位置，如果相差欧式距离为10则取距离最小的点继承特异标识
+长难句准备，也就是缓存三帧，更新pre,last,next，pre是最旧的，
+
+输入一帧后更新三帧
+
+所谓reco部分都是在更新last
+
+做last和next的光流，self.last_light_direct保存移动方向图
+
+    last帧connectedComponentsWithStats，分离labels出不同物体，配合光流图标注每物体的像素的信息保存到self.last_cluster，数据结构为{“特异标识”：[[self.last_light_direct对应位置的方向参数，x,y],....分割物体的点集的点集]}
+
+    last_cluster每个物体尝试做二次分割，遍历每一个值，按self.last_light_direct对应位置的方向参数大小顺序排布每一个值的列表，按照angle_diff = lambda a, b: min(abs(a - b), 360 - abs(a - b))，如果存在大于self.cluster_threshold数量的异类则分割。分割的物体赋予新的特异标识“特异标识”：[[self.last_light_direct对应位置的方向参数，x,y],....分割物体的点集的点集]}
+，删掉原来的物体，所有保存为self.cluster[特异标识,[[方向，x,y],....的点集]]
+
+    更新到ob，遍历每一个self.cluster,计算最大外接圆半径，最大外接圆坐标，方向，速度，保存到self.last.ob={"特异标识"：字典{最大外接圆半径，最大外接圆坐标，方向，速度}}
+
+对于pre帧是预测继承id，实现跟踪
+
+	遍历pre.ob内物体，圆心位置,速度,和速度方向和timestamp差估计位置，如果预测位置和last.ob相差欧式距离为10且方向 self.angle_threshold以内，则last.ob内物体继承对应特异标识
+
+result是根据last.ob帧的输出
+
 '''
-
-class Result:
-    """输出结果类：存储当前帧所有检测到的物体"""
-    def __init__(self, timestamp=None, objects=None):
-        self.timestamp = timestamp
-        # objects 字典: {"特异标识": {"center": (x,y), "radius": r, "direction": deg, "velocity": (vx,vy)}}
-        self.objects = objects if objects is not None else {}
-        self.xy = None  # 兼容忽略区域传递
-
-
-class Frame:
-    """帧数据容器"""
-    def __init__(self, timestamp, img, xy=None):
-        self.timestamp = timestamp
-        self.img = img          # BGR三通道
-        self.xy = xy            # 忽略区域坐标 [x1,y1,x2,y2]（来自上游 Result）
-
-
-class MoveFrame:
-    """内部帧数据容器（预处理后）"""
-    def __init__(self, img, xy=None, timestamp=None):
-        self.img = img          # 灰度图 float32 0-1
-        self.xy = xy            # 忽略区域坐标
-        self.timestamp = timestamp
-
-
 class MoveReco:
-    def __init__(self, path, in_queue, out_queue, fps=30, 
+    def __init__(self, path, in_queue, out_queue, fps=30,
                  angle_threshold=15, cluster_threshold=10, gray_threshold=0.46):
-        # in_queue: 输入队列，交替接收 Frame 和 Result(忽略区域)
+        # in_queue: 输入类管理队列对象，.get得到[Frame，Result(忽略区域)]
         # out_queue: 输出队列(结果)
         self.path = path
         self.in_queue = in_queue
         self.out_queue = out_queue
 
         # 缓存三帧数据: pre(最旧), last(当前), next(最新)
-        self.pre = {'frame': None, 'cluster': None, 'ob': None, 'timestamp': None}
-        self.last = {'frame': None, 'cluster': None, 'ob': None, 'timestamp': None}
-        self.next = {'frame': None, 'cluster': None, 'ob': None, 'timestamp': None}
+        self.pre = {'frame': None,  'ob': None, 'timestamp': None}
+        self.last = {'frame': None, 'ob': None, 'timestamp': None}
+        self.next = {'frame': None,'ob': None, 'timestamp': None}
 
         self.fps = fps
         self.is_life = True
-        self.pre_result = None
+
+        self.result = None
+
         self.angle_threshold = angle_threshold
         self.cluster_threshold = cluster_threshold
         self.gray_threshold = gray_threshold
 
+	    self.last_cluster={}
         self.last_light_direct = None   # 缓存光流图方向阵（last -> next）
         self.next_target_id = 0          # 用于生成唯一标识
 
-        # 临时变量，避免重复创建
-        self._temp_mask = None
-        self._temp_binary = None
-
-
-    def start(self):
-        run_thread = threading.Thread(target=self._run, daemon=True)
-        run_thread.start()
-        return run_thread
-
-
-    def _get_new_id(self):
+    def _id_(self):
         """生成新的唯一标识"""
         self.next_target_id += 1
-        return self.next_target_id - 1
-
-    def __preprocess_image(self, img, xy):
+        return self.next_target_id
+    def _gray_image_(self, img, xy):
         """
         图像预处理：灰度化、归一化、阈值过滤、忽略区域处理
-        
+ 
         输入：img(BGR三通道), xy(忽略区域坐标 [x1,y1,x2,y2])
         输出：processed_img(灰度图 float32 0-1)
         """
@@ -103,15 +80,13 @@ class MoveReco:
                 gray[y1:y1+h, x1:x1+w] = 0
 
         return gray
-    
+
     def _dataup(self):
         """
         数据更新：从队列获取数据，交替接收帧和忽略区域
-        Frame 和 Result(忽略区域) 成对出现，顺序：Frame -> Result -> Frame -> Result ...
-        
+ 
         输出：更新 self.pre, self.last, self.next
         """
-        # 滚动更新: pre 丢弃, last 变 pre, next 变 last
         if self.last['frame'] is not None:
             self.pre['frame'] = self.last['frame']
             self.pre['cluster'] = self.last['cluster']
@@ -124,32 +99,24 @@ class MoveReco:
             self.last['ob'] = self.next['ob']
             self.last['timestamp'] = self.next['timestamp']
 
-        # 从队列获取新帧（阻塞等待）
-        frame_data = self.in_queue.get()
-        if not isinstance(frame_data, Frame):
-            raise TypeError(f"期望 Frame 类型，实际得到 {type(frame_data)}")
-        
-        # 从队列获取对应的忽略区域（阻塞等待）
-        ig_data = self.in_queue.get()
-        if not isinstance(ig_data, Result):
-            raise TypeError(f"期望 Result(忽略区域) 类型，实际得到 {type(ig_data)}")
-        
-        ig_xy = ig_data.xy
+        next_data = self.in_queue.get()
+ 
+        xy = next_data[1].xy
 
-        img = frame_data.img
-        timestamp = frame_data.timestamp
+        img = next_data[0].img
+        timestamp = next_data[0].timestamp
 
         self.next['timestamp'] = timestamp
-        processed_img = self.__preprocess_image(img, ig_xy)
+        gray_img = self._gray_image_(img, xy)
 
-        self.next['frame'] = MoveFrame(processed_img, ig_xy, timestamp)
+        self.next['frame'] = gray_img
         self.next['cluster'] = None
         self.next['ob'] = None
 
-    def _calc_optical_flow(self):
+    def _flow(self):
         """
         光流法：计算 last 和 next 之间的光流场（从 last 到 next）
-        
+ 
         输入：self.last['frame'].img, self.next['frame'].img
         输出：self.last_light_direct (光流场)
         """
@@ -157,8 +124,8 @@ class MoveReco:
             self.last_light_direct = None
             return
 
-        pre_img = self.last['frame'].img
-        last_img = self.next['frame'].img
+        pre_img = self.last['frame']
+        last_img = self.next['frame']
 
         # 计算稠密光流
         flow = cv2.calcOpticalFlowFarneback(
