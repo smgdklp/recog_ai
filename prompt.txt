@@ -1,0 +1,804 @@
+import subprocess
+import time
+import win32gui
+import win32process
+import dxcam
+(创立log对象）
+class Frame:
+	def __init___()
+		(输入：time,时间戳；img，帧的数组信息）
+class Capture:
+	def __init__():
+		(初始参数：
+			输入：path,指向一个exe路径;fps，帧率;queue，产出队列
+			定义容器：img,存储截屏数据；hwnd,窗口句柄；pid，窗口pid；rect,绝对位置(left, top, right, bottom)；frame,类容器缓冲
+			状态参数：is_life=ture,进程是否存活依据；is_capture=false,进程是否截屏依据)
+	def start(self):
+		process=subprocess.open(path)
+		pid=process.pid
+		（等待10s，程序未开启报错，开启根据pid查找窗口句柄，找到窗口数量,pid,窗口句柄,保存窗口句柄）
+		check()
+		resize()
+		self.camera = dxcam.create(region=rect, output_idx=0,backend="dxgi")
+		(开启两个thread，_time和_run
+	def check()
+		(检查进程关闭则is_life=false,debug
+		最小化则is_captue=false,else:为ture,debug)
+		if 当前句柄有效：
+			if 句柄变化orhwnd为空：
+				（如果绝对位置超出屏幕，裁剪为在屏幕内部）
+				self.camera = dxcam.create(region=rect, output_idx=0,backend="dxgi")
+		else:
+			报错
+	def catch():
+		self.img=self.camera.grab()
+	def pull():
+		self.frame=Frame(时间戳，self.img)
+		(将frame加入queue)
+
+	def _time()
+		while is_life:
+			sleep(1除以fps秒)
+			（发出广播work)
+		(结束线程）
+	def_run()
+		while is_life:
+			（等待接受信号work)
+			check()
+			if is_calc:
+				catch()
+				pull()
+		（释放内存，关闭线程）
+if __name__="main":
+	（创立队列x,最大存5个对象，旧出新入不阻塞）
+	a=Capture("C:\mypy\[th11] 东方地灵殿 (汉化版+日文版)\th11c.exe"	，10，x)
+	(建立线程，每3秒从队列取一帧，将截图转化为图像以时间戳为名字，保存到"C:\mypy\recog_ai\新建文件夹"）
+	（启动两个线程）
+
+
+额外要求，填充log信息，给camera等多线程参数加线程锁
+
+
+(在class路径文件夹创立子文件夹结构如下
+/
+├── images/
+│   ├── train/
+│   └── val/
+└── labels/
+    ├── train/
+    └── val/    ）
+def class_date(class：输入class路径，data：输入data路径）：
+	(在class路径文件夹创立子文件夹结构如下
+/
+├── images/
+│   ├── train/
+│   └── val/
+└── labels/
+    ├── train/
+    └── val/    ）
+	pre_png=none做遍历png缓存容器
+	pre_txt=none做遍历txt缓存容器
+	（遍历data内.png文件，如果有和它一样名称的.txt，没有对应txt的忽视
+则将pre_png复制到data/images/trian/,pre_txt复制到data/labels/trian/)
+
+def class_train(class:输入class路径，proportion:输入一个不大于1小于零的浮点数）:
+	pre_png=none做遍历png缓存容器
+	pre_txt=none做遍历txt缓存容器
+	random_index=随机数容器
+	(遍历所有data/images/trian/.png	，
+		将random_index重新赋值为小于1大于0的随机64浮点数，
+			如其大于proportion，则把
+				则把data/images/trian/.png剪切到data/images/val/,data/labels/trian/对应相同名称的.txt剪切到data/images/val/
+def test(class:输入class路径）：
+	index=0，计数错误
+	（遍历所有data/images/trian/.png，检查是否在data/labels/trian/有对应名称的txt，data/images/val/.png检查是否在data/labels/val/有对应名称的txt
+	如果有没有对应的则index=+1
+if __name__="main":
+	class="C:\mypy\recog_ai\data"
+	data="C:\mypy\recog_ai\imgs"
+	class_date(class,data)
+	class_train(data，0.8）
+	test（data)
+class result:
+	def __init__():
+		(输入：xy,位置list	[x1, y1, x2, y2];time,时间戳）
+class mainreco:
+	def __init__():
+		(输入：path,模型地址；pre_queue,指向一个队列作为输入识别图的对象;out_queue,指向一个作为输出结果的队列对象;fps,默认为30
+		容器：is_life,布尔线程存活依据，is_capture=false,进程是否运算依据，pre_result,缓冲类容器）
+	def start():
+		self.model=(path)
+		(创立线程_run与_time)
+	def reco():
+		(从pre_queue取一个对象为frame
+		time=frame.time
+		img=frame.img#三通道数组
+		（将img导入模型，结果取置信度最高的结果result_xy=().xyxy[0].tolist()
+		self.pre_result(time,result_xy)
+	def pull():
+		(将pre_result加入out_queue)
+	def _time()
+		while is_life:
+			sleep(1除以fps秒)
+			（发出广播work)
+		(结束线程）
+	def _run():
+		while is_life:
+			（等待接受信号work）
+			reco()
+			pull()
+		（释放内存，关闭线程）
+
+if __name__=="__main__":
+	import capture
+	(创立capture类创立线程a
+	缓冲队列x连接ab最大容量为10
+	创立mainreco类创立线程b
+	缓冲队列y连接bc
+	创立线程c:
+		while ture:
+			time.sleep(2)
+			(取y中对象，打印time与list)
+if __name__ == "__main__":
+	path="C:\mypy\recog_ai\imgs"
+	(创立线程a,把path内png文件，转化为class Frame:
+	def __init___()
+		(输入：timestamp,文件名称,时间戳；img，文件的的数组信息）
+	创立mainreco类创立线程b
+	cache=[]连接b
+
+	）
+	(遍历cache，在对应timestamp为名称的png图像上画框，框位置参数参考xy）
+
+
+import pyqt5
+class mian_ob()
+	rela_location=pyqtSignal(四位数组)#模型输出相对位置
+	win_location=pyqtSignal(四位数组)#
+	is_life=pyqtSignal(bool)
+	is_show=pyqtSignal(bool)
+
+	def __init__():
+		（继承pyqt5子窗口类
+		容器：abs_xy,缓存这个窗口四位参数;rela_xy,缓存模型输出的四位数组相对窗口位置；win_xy，缓存从要叠加窗口句柄得到要叠加的窗口对于桌面的的位置
+		（注册信号rela_location变化执行self.re_rela
+		注册信号win_location变化执行self.re_win
+		注册信号is_life,is_life变化执行self.life
+		注册信号is_show变化执行self.show
+	def life():
+		if is_life==False:
+			(销毁窗口释放内存）
+	def show():
+		if is_show:
+			(显示
+		else:
+			(隐藏
+ 	def re_rela():
+		rela_xy=rela_location
+		self.change()
+	def re_win():
+		win_xy=win_location
+		self.change()
+	def change():
+		abs_xy=(根据rela_xy和win_xy换算为当前窗口的绝对位置）
+		（根据abs_xy更新当前窗口位置）
+
+class win_frame()
+	rela_location=pyqtSignal(list)
+	is_life=pyqtSignal(bool)
+	def __init__():
+		(继承pyqt5子窗口类
+
+		隐藏title,窗口框，背景
+		输入：hwnd，覆盖窗口对象的句柄；fps=30
+		容器：q_queue，队列流式久出新入，最多缓存一个;rela_xy,缓存模型输出的四位数组相对目标窗口位置；win_xy,缓存覆盖目标窗口的信息；pre_xy，缓存当前位置信息;is_show
+		创立计时器work=qtime(33）
+		注册信号work变化执行self._run()槽函数
+		注册信号rela_location变化执行self.change_rela()槽函数
+		注册信号is_life,is_life变化执行self.life
+	def life():
+		if is_life==False:
+			(销毁窗口释放内存，结束窗口循环）
+	def change_rela():
+		（将rela_location加入队列
+
+	def _run():
+
+			（
+			队列q_queue为空，
+				is_show=false
+				根据句柄获得目标窗口在桌面位置信息
+					若win_xy变化且有效，更新win_xy
+					若无效则print，pass
+				执行change()
+			否则，更新rela_xy
+				is_show=ture
+				change()
+			）
+	def  change():
+		if is_show:
+			rela_xy和win_xy更新pre_xy
+			窗口改变为pre_xy
+			绘制比pre_xy小一像素宽高的框，显示
+		else:
+
+			隐藏
+
+#test
+improt (以上三个库）
+a = Capture(r"C:\mypy\[th11] 东方地灵殿 (汉化版+日文版)\th11c.exe", 30, q)
+q队列，最多缓存5
+b=Mainreco(r"C:\mypy\recog_ai\runs\detect\train\weights\best.pt",q,w)
+a.hwnd
+w队列，最多缓存5
+c线程
+	（while
+		接受队列w，发出信号.xy）
+启动abc三线程
+d=mian_ob(a.hwnd)
+启动gui主循环
+
+
+类管理capture和图像识别消费者的统一分发队列
+#queue.py
+class C_Reco:
+	def __init__()
+		(容器：pre_q,流式不阻塞队列，接受capture最多缓存5个
+				cur_q,分发给下游的缓存容器
+				custom=2,分发数量
+				count=0,消费者等候计数
+				self.lock）
+		_run()
+	def pull(frame):
+		(将pre_q.put（frame）
+	def distri(_):
+		cur_q=pre_q.get
+	def get（）
+		with self.lock：
+			self.count += 1
+			if self.count <custom:
+        			self.cond.wait()
+			else:
+				distri(_)
+				self.count = 0
+				self.cond.notify_all()
+		return cur_q
+	
+	
+
+
+
+
+class Move_frame:
+	def __init__():
+		(容器：
+	self.timestamp = timestamp
+        self.img = img
+
+class Move_reco:
+	#光流法，虽然识别的是上一帧的！！！！但是做轨迹预测图不差这点误差（确信
+	def __init__(_):
+	        # path: 模型地址; pre_queue: 输入队列(识别图); out_queue: 输出队列(结果); fps: 最高处理帧率
+        self.path = path
+        self.pre_queue = pre_queue
+        self.out_queue = out_queue
+
+	self.pre_frame缓存上一帧
+	self.last_frame缓存这一帧
+
+        self.fps = fps
+        self.is_life = True
+        self.pre_result = None
+	self.agnle=agnle(自定义类聚夹角
+	self.cluster=cluster(自定义类聚最远目标
+    def start(self):
+        run_thread = threading.Thread(target=self._run, daemon=True)
+        run_thread.start()
+        return run_thread
+  def remove（）：
+	if self.last_frame：
+		self.pre_frame=self.last_frame
+       self.last_frame = self.pre_queue.get()
+        img = frame.img
+	(img转化为灰度图
+	每个元素除以225，float32）
+	re_img=（将元素<threshold的值变为0）
+	self.last.img=re_img
+  def reco():
+	if self.pre_frame:
+		timestamp = self.last_frame.timestamp
+        	pre_img = self.pre_frame.img
+		last_img=self.last_frame.img
+		temple=pre_img等大模板，用于数组下文快速匹配，pre_img数组相同位置不为0的元素是1
+		(pre和last_img做光流法）
+
+		#方向
+		v_img=光流向量图
+		v=[]
+		temple中为1的元素，v.apped([v_img对应位置数值,该元素的二维数组位置])
+	           将v内列表元素按照第一个元素的大小为依据排序
+		#方向类聚
+		cluster=[]
+		angle_diff = lambda a, b: min(abs(a - b), 360 - abs(a - b))
+		cur_clu=[]
+		for i in v:
+		   cur_clu.append(i)
+			和i+1个元素比较第一个元素，angle_diff = lambda a, b: min(abs(a - b), 360 - abs(a - b))，如果角度差异小于10度
+						cur_clu.apped(i)
+						cur_clu=[]
+		（处理最后一个元素的应用超出列表（
+
+		#位置类聚
+		moves=[]
+		   for j in cluster:
+			cur_move=[]
+			for k in j:
+			cur_move.append（k)
+				和i+1个元素比较第一个元素，比较欧式距离如果小于5
+						v.apped(cur_move)
+						cur_move=[]
+		（处理最后一个元素的应用超出列表（
+	
+		#整形
+		ob=[]
+		    for h in moves:
+			(最大外接圆
+		#预测图
+		根据外界圆参数做等大预测图，对于方格和园的误差要圆边压到的都取
+		圆按照平均方向移动100格，浮点和格子误差求最大
+    def pull(self):
+        if self.pre_result is not None:
+            self.out_queue.put(self.pre_result)
+		     def _run():
+	 last_time = time.time()
+        min_interval = 1.0 / self.fps
+
+        while self.is_life:
+            current_time = time.time()
+            elapsed = current_time - last_time
+
+            if elapsed >= min_interval:
+		self.remov
+                self.reco()
+                self.pull()
+                last_time = current_time
+            else:
+                time.sleep(min_interval - elapsed)
+
+class gray_grad()
+	def __init__():
+		(输入：max=1,min小于1大于0的数字
+		grad:阶层数量
+		path,指向图片来源文件夹路径
+		out,指向导出文件夹
+		num
+	def _run():
+		for i in range(grad+1)
+			pre_grad=i*(max-min)/grad)+min
+			创立文件夹名称为pre_grad值的文件夹
+			随机在path下拿num张图片
+			图片已经是灰度，转化为数组，把图片中不在max和min期间的元素变为0，保存到pre_grad值的文件夹
+
+s=gray_（1，0.4，10，"C:\mypy\recog_ai\imgs"，"C:\mypy\recog_ai\imgs"，5）
+
+
+class result:
+	def __init__():
+		self.ob=字典
+		（”特异标识“：字典{最大外接圆半径，最大外接圆坐标，方向}）
+class Move_reco:
+	def __init__(_):
+	        # ig_queue,接受忽视区块的队列; in_queue: 输入队列(识别图); out_queue: 输出队列(结果); fps: 最高处理帧率
+        self.path = path
+        self.in_queue = in_queue
+        self.out_queue = out_queue
+
+	self.pre缓存上一帧相关的数据
+	self.last缓存输出当前帧相关的数据
+	self.next缓存最新帧
+	（字典：frame，储存类管理帧；ig，忽略位置四位数组；cluster，储存分割目标；ob，缓存当前帧的物体参数字典（”特异标识“：字典{最大外接圆半径，最大外接圆坐标，方向，速度}））
+
+        self.fps = fps
+        self.is_life = True
+        self.pre_result = None
+	self.agnle_threshold=agnle(自定义类聚夹角
+	self.cluster_threshold=cluster(自定义类聚最远目标
+        self.gray_threshold=0.46（自定义灰度阈值）
+
+        self.pre_lingt_direct
+	self.last_light_direct缓存光流图方向阵
+
+    def start(self):
+        run_thread = threading.Thread(target=self._run, daemon=True)
+        run_thread.start()
+        return run_thread
+
+  def _dataup_():
+	self.last.frame = self.in_queue.get()
+	self.last.ig=self.ig_queue.get()
+	frame=self.last.frame.img
+	xy=self.last.frame.xy
+	(img转化为灰度图
+	每个元素除以225，float32）
+        if self.ig.xy:
+              (xy存的是四位位置参数，四舍五入取整，将img对应区域内的元素变成0)
+
+  def _light_():
+                 #光流法
+		(nest和last_img做光流法，结果缓存lightdirect）
+
+  def _divi_acord_cluster_():
+                #临近物体检测，依据临近
+		nest.img内元素非0转化为1
+                 connectedComponentsWithStats方法分别处理两个img缓存lables
+		两个lable提取元素保存到
+                 两个帧cluster=
+  def _divi_acord_v_():
+		#光流法分割
+		#方向类聚
+		angle_diff = lambda a, b: min(abs(a - b), 360 - abs(a - b))
+		cur_clu=[]
+		for i in v:
+		   cur_clu.append(i)
+			和i+1个元素比较第一个元素，angle_diff = lambda a, b: min(abs(a - b), 360 - abs(a - b))，如果角度差异小于10度
+						cur_clu.apped(i)
+						cur_clu=[]
+		（处理最后一个元素的应用超出列表（
+
+（这里懒得写了）
+    def pull(self):
+        if self.pre_result is not None:
+            self.out_queue.put(self.pre_result)
+		     def _run():
+	 last_time = time.time()
+        min_interval = 1.0 / self.fps
+
+        while self.is_life:
+            current_time = time.time()
+            elapsed = current_time - last_time
+
+            if elapsed >= min_interval:
+		self.remov
+                self.reco()
+                self.pull()
+                last_time = current_time
+            else:
+                time.sleep(min_interval - elapsed)
+通过如风	·其饿1	·1五容器挖沙子粉丝网侵权法让他去无污染台湾345天qwaQSWZXCAzsXVFGTREASDFGTHYTGFRTGUJKL
+
+
+
+class MoveFrame:
+    """内部帧数据容器（预处理后）"""
+    def __init__(self, img, xy=None, timestamp=None):
+        self.img = img          # 灰度图 float32 0-1
+        self.xy = xy            # 忽略区域坐标
+        self.timestamp = timestamp
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+import cv2
+import numpy as np
+import threading
+import time
+
+from sklearn.cluster import DBSCAN
+
+'''
+用到三帧，当前帧主要用相邻来分割实体。前一帧信息用来遗传id，追踪同一个物体。后一帧信息用来做光流图，根据方向向量，切割同一个物体的重叠物体
+
+长难句准备，也就是缓存三帧，更新pre,last,next，pre是最旧的，
+
+输入一帧后更新三帧
+
+所谓reco部分都是在更新last
+
+做last和next的光流，self.last_light_direct保存移动方向图
+
+    last帧connectedComponentsWithStats，分离labels出不同物体掩码，形态学边缘检测，核大小 5x5
+    对照光流图标注每物体的像素的信息保存到self.last_cluster，数据结构为{“特异标识”：[[self.last_light_direct对应位置的方向参数，x,y],....分割物体的点集的点集]}
+
+    last_cluster每个物体尝试做二次分割，遍历每一个值，按self.last_light_direct对应位置的方向参数大小顺序排布每一个值的列表，按照angle_diff = lambda a, b: min(abs(a - b), 360 - abs(a - b))，如果存在大于self.cluster_threshold数量的异类则分割。分割的物体赋予新的特异标识“特异标识”：[[self.last_light_direct对应位置的方向参数，x,y],....分割物体的点集的点集]}
+，删掉原来的物体，所有保存为self.cluster[特异标识,[[方向，x,y],....的点集]]
+
+    更新到ob，遍历每一个self.cluster,计算最大外接圆半径，最大外接圆坐标，方向，速度，保存到self.last.ob={"特异标识"：字典{最大外接圆半径，最大外接圆坐标，方向，速度}}
+
+对于pre帧是预测继承id，实现跟踪
+
+	遍历pre.ob内物体，圆心位置,速度,和速度方向和timestamp差估计位置，如果预测位置和last.ob相差欧式距离为10且方向 self.angle_threshold以内，则last.ob内物体继承对应特异标识
+
+result是根据last.ob帧的输出
+'''
+
+
+class MoveReco:
+    def __init__(self, path, in_queue, out_queue, fps=30,
+                 angle_threshold=15, cluster_threshold=10, gray_threshold=0.46):
+        # in_queue: 输入类管理队列对象，.get得到[Frame，Result(忽略区域)]
+        # out_queue: 输出队列(结果)
+        self.path = path
+        self.in_queue = in_queue
+        self.out_queue = out_queue
+
+        # 缓存三帧数据: pre(最旧), last(当前), next(最新)
+        self.pre = {'frame': None,  'ob': None, 'timestamp': None}
+        self.last = {'frame': None, 'ob': None, 'timestamp': None}
+        self.next = {'frame': None,'ob': None, 'timestamp': None}
+
+        self.fps = fps
+        self.is_life = True
+
+        self.result = None
+
+        self.angle_threshold = angle_threshold
+        self.cluster_threshold = cluster_threshold
+        self.gray_threshold = gray_threshold
+
+	self.mask=[]
+	self.edge_mask=[]
+	self.last_cluster={}
+        self.last_light_direct = None   # 缓存光流图方向阵（last -> next）
+        self.next_target_id = 0          # 用于生成唯一标识
+
+    def _id_(self):
+        """生成新的唯一标识"""
+        self.next_target_id += 1
+        return self.next_target_id
+    def _gray_image_(self, img, xy):
+        """
+        图像预处理：灰度化、归一化、阈值过滤、忽略区域处理
+ 
+        输入：img(BGR三通道), xy(忽略区域坐标 [x1,y1,x2,y2])
+        输出：processed_img(灰度图 float32 0-1)
+        """
+
+        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY).astype(np.float32) / 255.0
+
+        gray[gray < self.gray_threshold] = 0
+
+        if xy and len(xy) == 4:
+            x1, y1, x2, y2 = [int(round(v)) for v in xy]
+            w = x2 - x1
+            h = y2 - y1
+            if w > 0 and h > 0:
+                gray[y1:y1+h, x1:x1+w] = 0
+
+        return gray
+
+    def _dataup(self):
+        """
+        数据更新：从队列获取数据，交替接收帧和忽略区域
+ 
+        输出：更新 self.pre, self.last, self.next
+        """
+        if self.last['frame'] is not None:
+            self.pre['frame'] = self.last['frame']
+            self.pre['cluster'] = self.last['cluster']
+            self.pre['ob'] = self.last['ob']
+            self.pre['timestamp'] = self.last['timestamp']
+
+        if self.next['frame'] is not None:
+            self.last['frame'] = self.next['frame']
+            self.last['cluster'] = self.next['cluster']
+            self.last['ob'] = self.next['ob']
+            self.last['timestamp'] = self.next['timestamp']
+
+        next_data = self.in_queue.get()
+ 
+        xy = next_data[1].xy
+
+        img = next_data[0].img
+        timestamp = next_data[0].timestamp
+
+        self.next['timestamp'] = timestamp
+        gray_img = self._gray_image_(img, ig_xy)
+
+        self.next['frame'] = gray_img
+        self.next['cluster'] = None
+        self.next['ob'] = None
+
+    def _flow(self):
+        """
+        光流法：计算 last 和 next 之间的光流场（从 last 到 next）
+ 
+        输入：self.last['frame'].img, self.next['frame'].img
+        输出：self.last_light_direct (光流场)
+        """
+        if self.last['frame'] is None or self.next['frame'] is None:
+            self.last_light_direct = None
+            return
+
+        pre_img = self.last['frame']
+        last_img = self.next['frame']
+
+        # 计算稠密光流
+        flow = cv2.calcOpticalFlowFarneback(
+            pre_img, last_img, None,
+            0.5, 3, 15, 3, 5, 1.2, 0
+        )
+        self.last_light_direct = flow
+ 
+
+    def _connected(self):
+        """
+        对last二值图像做连通域分析，初步实现目标识别
+        输入：self.last["frame"],
+        输出：self.mask
+      """
+        img=self.last["frame"]
+	cv2.connectedComponentsWithStats
+	(分离labels出不同物体掩码，保存到掩码列表self.mask=[]
+
+    def _to_edge(self):
+	"""
+	mask边缘提取,目标以边缘为依据
+	输入：self.mask
+	输出：self.egde_mask
+	"""
+	for index,m in enumar(self.mask):
+		cv2.morphologyEx(m,cv2.IMREAD_GRAYSCALE)
+		kernel = np.ones((5, 5), np.uint8)#二宽度边缘
+		edge_mask = cv2.morphologyEx(mask, cv2.MORPH_GRADIENT, kernel)
+		self.egde_mask.append(edge_mask)
+		
+    def _to_ob(self):
+	"""
+	将egde_mask依据光流图二次划分重叠物体
+	输入：self.egde_mask，self.mask，self.last_light_direct
+	输出：self.last["ob"]
+	"""
+	for i in self.egde_mask:
+		cluster=[]
+		(提取每一个在掩码中非零的像素位置，配合self.last_light_direct对应点角度转化为float32的360角度保存到cluster
+		 每个点保存形式（角度，x, y))
+		cluster按照第一位角度大小排序所有元素
+		cluster数组化3*n 
+		切片角度栏
+		angle_diff = lambda a, b: min(abs(a - b), 360 - abs(a - b))
+		
+		
+
+		
+		
+	
+		
+
+    def start(self):
+        run_thread = threading.Thread(target=self._run, daemon=True)
+        run_thread.start()
+        return run_thread
+
+
+
+
+
+
+
+
+
+
+
+
+ "C:\mypy\recog_ai\imgs\flaw" 内的图片按照时间戳命名了
+对相邻时间戳的图片做以下操作，需要改造适配，最后egde_mask每一张掩码非零元素替换为光流图对应位置的角度.最后都得到最后把egde_mask列表添加到新的txt.txt名称为这是第几轮光流图，保存到"C:\mypy\recog_ai\imgs\flaw\result"
+
+
+    def _gray_image_(self, img, xy):
+        """
+        图像预处理：灰度化、归一化、阈值过滤、忽略区域处理
+ 
+        输入：img(BGR三通道), xy(忽略区域坐标 [x1,y1,x2,y2])
+        输出：processed_img(灰度图 float32 0-1)
+        """
+
+        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY).astype(np.float32) / 255.0
+
+        gray[gray < self.gray_threshold] = 0
+
+        if xy and len(xy) == 4:
+            x1, y1, x2, y2 = [int(round(v)) for v in xy]
+            w = x2 - x1
+            h = y2 - y1
+            if w > 0 and h > 0:
+                gray[y1:y1+h, x1:x1+w] = 0
+
+        return gray
+
+    def _dataup(self):
+        """
+        数据更新：从队列获取数据，交替接收帧和忽略区域
+ 
+        输出：更新 self.pre, self.last, self.next
+        """
+        if self.last['frame'] is not None:
+            self.pre['frame'] = self.last['frame']
+            self.pre['cluster'] = self.last['cluster']
+            self.pre['ob'] = self.last['ob']
+            self.pre['timestamp'] = self.last['timestamp']
+
+        if self.next['frame'] is not None:
+            self.last['frame'] = self.next['frame']
+            self.last['cluster'] = self.next['cluster']
+            self.last['ob'] = self.next['ob']
+            self.last['timestamp'] = self.next['timestamp']
+
+        next_data = self.in_queue.get()
+ 
+        xy = next_data[1].xy
+
+        img = next_data[0].img
+        timestamp = next_data[0].timestamp
+
+        self.next['timestamp'] = timestamp
+        gray_img = self._gray_image_(img, ig_xy)
+
+        self.next['frame'] = gray_img
+        self.next['cluster'] = None
+        self.next['ob'] = None
+
+    def _flow(self):
+        """
+        光流法：计算 last 和 next 之间的光流场（从 last 到 next）
+ 
+        输入：self.last['frame'].img, self.next['frame'].img
+        输出：self.last_light_direct (光流场)
+        """
+        if self.last['frame'] is None or self.next['frame'] is None:
+            self.last_light_direct = None
+            return
+
+        pre_img = self.last['frame']
+        last_img = self.next['frame']
+
+        # 计算稠密光流
+        flow = cv2.calcOpticalFlowFarneback(
+            pre_img, last_img, None,
+            0.5, 3, 15, 3, 5, 1.2, 0
+        )
+        self.last_light_direct = flow  def _connected(self):
+        """
+        对last二值图像做连通域分析，初步实现目标识别
+        输入：self.last["frame"],
+        输出：self.mask
+      """
+        img=self.last["frame"]
+	cv2.connectedComponentsWithStats
+	(分离labels出不同物体掩码，保存到掩码列表self.mask=[]
+
+    def _to_edge(self):
+	"""
+	mask边缘提取,目标以边缘为依据
+	输入：self.mask
+	输出：self.egde_mask
+	"""
+	for index,m in enumar(self.mask):
+		cv2.morphologyEx(m,cv2.IMREAD_GRAYSCALE)
+		kernel = np.ones((5, 5), np.uint8)#二宽度边缘
+		edge_mask = cv2.morphologyEx(mask, cv2.MORPH_GRADIENT, kernel)
+		self.egde_mask.append(edge_mask)
+		
+    def _to_ob(self):
+	"""
+	将egde_mask依据光流图二次划分重叠物体
+	输入：self.egde_mask，self.mask，self.last_light_direct
+	输出：self.last["ob"]
+	"""
+	for i in self.egde_mask:
+		cluster=[]
+		(提取每一个在掩码中非零的像素位置，配合self.last_light_direct对应点角度转化为float32的360角度保存到cluster
+		 每个点保存形式（角度，x, y))
+
+ "C:\mypy\recog_ai\imgs\flaw"
+
+"C:\mypy\recog_ai\imgs\flaw\result"

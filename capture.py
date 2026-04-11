@@ -128,7 +128,7 @@ class Capture:
 if __name__ == "__main__":
     q = queue.Queue(maxsize=5)
     a = Capture(r"C:\mypy\[th11] 东方地灵殿 (汉化版+日文版)\th11c.exe", 10, q)
-    save_dir = r"C:\mypy\recog_ai\imgs"
+    save_dir = r"C:\mypy\recog_ai\imgs\test"
     os.makedirs(save_dir, exist_ok=True)
     
     def save_frames():
