@@ -5,7 +5,6 @@ import time
 
 '''
 用到三帧，当前帧主要用相邻来分割实体。前一帧信息用来遗传id，追踪同一个物体。后一帧信息用来做光流图，根据方向向量，切割同一个物体的重叠物体
-用到三帧，当前帧主要用相邻来分割实体。前一帧信息用来遗传id，追踪同一个物体。后一帧信息用来做光流图，根据方向向量，切割同一个物体的重叠物体
 
 长难句准备，也就是缓存三帧，更新pre,last,next，pre是最旧的，
 
@@ -13,22 +12,14 @@ import time
 
 所谓reco部分都是在更新last
 
-做last和next的光流，self.last_light_direct保存移动方向图
-
-    last帧connectedComponentsWithStats，分离labels出不同物体，配合光流图标注每物体的像素的信息保存到self.last_cluster，数据结构为{“特异标识”：[[self.last_light_direct对应位置的方向参数，x,y],....分割物体的点集的点集]}
-
-    last_cluster每个物体尝试做二次分割，遍历每一个值，按self.last_light_direct对应位置的方向参数大小顺序排布每一个值的列表，按照angle_diff = lambda a, b: min(abs(a - b), 360 - abs(a - b))，如果存在大于self.cluster_threshold数量的异类则分割。分割的物体赋予新的特异标识“特异标识”：[[self.last_light_direct对应位置的方向参数，x,y],....分割物体的点集的点集]}
-，删掉原来的物体，所有保存为self.cluster[特异标识,[[方向，x,y],....的点集]]
-
-    更新到ob，遍历每一个self.cluster,计算最大外接圆半径，最大外接圆坐标，方向，速度，保存到self.last.ob={"特异标识"：字典{最大外接圆半径，最大外接圆坐标，方向，速度}}
-
-对于pre帧是预测继承id，实现跟踪
-
-	遍历pre.ob内物体，圆心位置,速度,和速度方向和timestamp差估计位置，如果预测位置和last.ob相差欧式距离为10且方向 self.angle_threshold以内，则last.ob内物体继承对应特异标识
+继承还是先放一下吧。。。。。。
 
 result是根据last.ob帧的输出
 
+pov:孩子们注意注释接口和数据类型问题就不会乱。。。。。。
 '''
+
+
 class MoveReco:
     def __init__(self, path, in_queue, out_queue, fps=30,
                  angle_threshold=15, cluster_threshold=10, gray_threshold=0.46):
@@ -39,12 +30,13 @@ class MoveReco:
         self.out_queue = out_queue
 
         # 缓存三帧数据: pre(最旧), last(当前), next(最新)
-        self.pre = {'frame': None,  'ob': None, 'timestamp': None}
+        self.pre = {'frame': None, 'ob': None, 'timestamp': None}
         self.last = {'frame': None, 'ob': None, 'timestamp': None}
-        self.next = {'frame': None,'ob': None, 'timestamp': None}
+        self.next = {'frame': None, 'ob': None, 'timestamp': None}
 
         self.fps = fps
         self.is_life = True
+        self.cut = None  # 四位列表，窗口参数，用于在原图像上裁剪有价值区域
 
         self.result = None
 
@@ -52,22 +44,26 @@ class MoveReco:
         self.cluster_threshold = cluster_threshold
         self.gray_threshold = gray_threshold
 
-	    self.last_cluster={}
-        self.last_light_direct = None   # 缓存光流图方向阵（last -> next）
-        self.next_target_id = 0          # 用于生成唯一标识
+        self.mask = []  # 初筛价值目标,01掩码列表
+        self.edge_mask = []  # 边缘提取目标，掩码列表
+        self.fin_edge_p = []  # 边缘提取二次分割，点集列表
+        self.fin_mask = []  # 初筛目标二次分割得到最终目标，掩码列表
+        self.last_light_direct = None  # 缓存光流图方向阵（last -> next）
+        self.last_light_v = None  # 缓存速度阵图
+        self.next_target_id = 0  # 用于生成唯一标识
 
     def _id_(self):
         """生成新的唯一标识"""
         self.next_target_id += 1
         return self.next_target_id
+
     def _gray_image_(self, img, xy):
         """
-        图像预处理：灰度化、归一化、阈值过滤、忽略区域处理
+        图像预处理：灰度化、归一化、阈值过滤、忽略区域过滤和有效区域裁剪
  
         输入：img(BGR三通道), xy(忽略区域坐标 [x1,y1,x2,y2])
         输出：processed_img(灰度图 float32 0-1)
         """
-
         gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY).astype(np.float32) / 255.0
 
         gray[gray < self.gray_threshold] = 0
@@ -79,6 +75,11 @@ class MoveReco:
             if w > 0 and h > 0:
                 gray[y1:y1+h, x1:x1+w] = 0
 
+        # 将self.cut部分裁剪出来
+        if self.cut is not None:
+            x1, y1, x2, y2 = [int(round(v)) for v in self.cut]
+            gray = gray[y1:y2, x1:x2]
+
         return gray
 
     def _dataup(self):
@@ -89,20 +90,17 @@ class MoveReco:
         """
         if self.last['frame'] is not None:
             self.pre['frame'] = self.last['frame']
-            self.pre['cluster'] = self.last['cluster']
             self.pre['ob'] = self.last['ob']
             self.pre['timestamp'] = self.last['timestamp']
 
         if self.next['frame'] is not None:
             self.last['frame'] = self.next['frame']
-            self.last['cluster'] = self.next['cluster']
             self.last['ob'] = self.next['ob']
             self.last['timestamp'] = self.next['timestamp']
 
         next_data = self.in_queue.get()
- 
-        xy = next_data[1].xy
 
+        xy = next_data[1]  # 假设Result对象可直接索引或为元组，忽略区域坐标
         img = next_data[0].img
         timestamp = next_data[0].timestamp
 
@@ -110,421 +108,250 @@ class MoveReco:
         gray_img = self._gray_image_(img, xy)
 
         self.next['frame'] = gray_img
-        self.next['cluster'] = None
         self.next['ob'] = None
+        self.mask = []
+        self.edge_mask = [] 
+        self.fin_edge_p = [] 
+        self.fin_mask = []
+        self.last_light_direct = None
+        self.last_light_v = None 
+
+    def _connected(self):
+        """
+        对last二值图像做连通域分析，初步实现目标识别
+        输入：self.last["frame"]
+        输出：self.mask
+        """
+        img = self.last["frame"]
+        binary = (img > 0).astype(np.uint8) * 255
+        
+        num_labels, labels, stats, centroids = cv2.connectedComponentsWithStats(binary, connectivity=8)
+        
+        self.mask = []
+        for i in range(1, num_labels):  # 跳过背景0
+            mask = (labels == i).astype(np.uint8)
+            self.mask.append(mask)
+
+    def _to_edge(self):
+        """
+        mask边缘提取，二宽度
+        输入：self.mask
+        输出：self.edge_mask，01掩码数组列表
+        """
+        self.edge_mask = []
+        kernel = np.ones((5, 5), np.uint8)  # 二宽度边缘
+        
+        for mask in self.mask:
+            # 确保mask是二值图像
+            mask_uint8 = (mask * 255).astype(np.uint8)
+            edge_mask = cv2.morphologyEx(mask_uint8, cv2.MORPH_GRADIENT, kernel)
+            self.edge_mask.append(edge_mask)  # 01掩码数组
 
     def _flow(self):
         """
-        光流法：计算 last 和 next 之间的光流场（从 last 到 next）
- 
-        输入：self.last['frame'].img, self.next['frame'].img
-        输出：self.last_light_direct (光流场)
+        计算 last 和 next 之间的稀疏光流，只要转化为360制角度的等大数组
+     
+        输入：self.last['frame'], self.next['frame'], self.edge_mask
+        输出：self.last_light_direct，nan和float32的360角度的数组
+              self.last_light_v, nan和速度的数组
         """
-        if self.last['frame'] is None or self.next['frame'] is None:
-            self.last_light_direct = None
+        last_img = (self.last['frame'] * 255).astype(np.uint8)
+        next_img = (self.next['frame'] * 255).astype(np.uint8)
+        
+        # 提取self.edge_mask中所有数组元素的非零点位置
+        all_points = []
+        for edge_mask in self.edge_mask:
+            pts = np.column_stack(np.where(edge_mask > 0))
+            all_points.extend(pts)
+        
+        if len(all_points) == 0:
+            h, w = last_img.shape
+            self.last_light_direct = np.full((h, w), np.nan, dtype=np.float32)
+            self.last_light_v = np.full((h, w), np.nan, dtype=np.float32)
             return
-
-        pre_img = self.last['frame']
-        last_img = self.next['frame']
-
-        # 计算稠密光流
-        flow = cv2.calcOpticalFlowFarneback(
-            pre_img, last_img, None,
-            0.5, 3, 15, 3, 5, 1.2, 0
+        
+        prevPts = np.array(all_points, dtype=np.float32).reshape(-1, 1, 2)
+        
+        # 稀疏光流计算
+        next_pts, status, err = cv2.calcOpticalFlowPyrLK(
+            last_img, next_img, prevPts, None,
+            winSize=(21, 21), maxLevel=3,
+            criteria=(cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_COUNT, 30, 0.01),
+            flags=0, minEigThreshold=1e-4
         )
-        self.last_light_direct = flow
-
-
-    def _connected_components(self, img):
-        """
-        对二值图像做连通域分析，结果存入实例变量
         
-        输入：img(灰度图)
-        输出：self._temp_labels, self._temp_stats, self._temp_centroids, self._temp_num_labels
-        """
-        binary = (img > 0).astype(np.uint8) * 255
-        self._temp_labels, self._temp_stats, self._temp_centroids = cv2.connectedComponentsWithStats(
-            binary, connectivity=8
-        )[:3]
-        self._temp_num_labels = self._temp_labels.max() if self._temp_labels.size > 0 else 0
-
-
-    def _segment_connected_components(self, target_frame_key='next'):
-        """
-        临近物体检测：对指定帧做连通域分析，分离出不同物体
+        h, w = last_img.shape
+        self.last_light_direct = np.full((h, w), np.nan, dtype=np.float32)
+        self.last_light_v = np.full((h, w), np.nan, dtype=np.float32)
         
-        输入：target_frame_key - 'last' 或 'next'
-        输出：更新 self[target_frame_key]['cluster']
-        """
-        frame_data = self.last if target_frame_key == 'last' else self.next
-        if frame_data['frame'] is None:
-            return
+        for i, (pt, st) in enumerate(zip(prevPts, status)):
+            if st[0] == 1:
+                x, y = int(round(pt[0][0])), int(round(pt[0][1]))
+                if 0 <= x < w and 0 <= y < h:
+                    dx = next_pts[i][0][0] - pt[0][0]
+                    dy = next_pts[i][0][1] - pt[0][1]
+                    magnitude = np.sqrt(dx**2 + dy**2)
+                    angle = np.arctan2(dy, dx) * 180 / np.pi
+                    if angle < 0:
+                        angle += 360
+                    
+                    self.last_light_v[y, x] = magnitude
+                    self.last_light_direct[y, x] = angle
 
-        img = frame_data['frame'].img
-        self._connected_components(img)
+    def _to_flaw(self):
+        """
+        将edge_mask依据光流图二次划分重叠边缘
+        输入：self.edge_mask，self.last_light_direct
+        输出：self.fin_edge_p，点集列表
+        """
+        self.fin_edge_p = []
         
-        cluster = {}
-        for i in range(1, self._temp_num_labels + 1):
-            mask = (self._temp_labels == i)
-            y_coords, x_coords = np.where(mask)
-            if len(y_coords) < self.cluster_threshold:
+        for edge_mask in self.edge_mask:
+            cluster = []
+            ys, xs = np.where(edge_mask > 0)
+            
+            for y, x in zip(ys, xs):
+                angle = self.last_light_direct[y, x]
+                if not np.isnan(angle):
+                    cluster.append((angle, x, y))
+            
+            if len(cluster) == 0:
                 continue
-
-            points = list(zip(x_coords.tolist(), y_coords.tolist()))
-            target_id = self._get_new_id()
             
-            # 获取质心
-            centroid_x = self._temp_centroids[i][0] if i < len(self._temp_centroids) else sum(x_coords)/len(x_coords)
-            centroid_y = self._temp_centroids[i][1] if i < len(self._temp_centroids) else sum(y_coords)/len(y_coords)
+            # 按照第一位角度大小排序所有元素
+            cluster.sort(key=lambda p: p[0])
             
-            # 获取边界框
-            stats = self._temp_stats[i] if i < len(self._temp_stats) else None
-            if stats is not None:
-                bbox = (stats[cv2.CC_STAT_LEFT], stats[cv2.CC_STAT_TOP],
-                       stats[cv2.CC_STAT_WIDTH], stats[cv2.CC_STAT_HEIGHT])
+            angles = np.array([p[0] for p in cluster])
+            points = np.array([(p[1], p[2]) for p in cluster])
+            
+            # 计算相邻角度差（考虑360度循环）
+            n = len(angles)
+            diff = np.zeros(n)
+            for i in range(n):
+                diff[i] = min(abs(angles[i] - angles[i-1]), 360 - abs(angles[i] - angles[i-1]))
+            
+            # 查找大于阈值的位置
+            large_indices = np.where(diff > self.angle_threshold)[0]
+            
+            if len(large_indices) > 0:
+                # 计算切割点
+                cut_points = []
+                for idx in large_indices:
+                    if idx > 0:
+                        mid = (angles[idx] + angles[idx-1]) / 2
+                        cut_points.append(mid)
+                
+                cut_points.sort()
+                
+                # 按切割点分割
+                start = 0
+                for cut in cut_points:
+                    # 找到第一个角度大于切割点的位置
+                    split_idx = np.searchsorted(angles, cut)
+                    if split_idx > start:
+                        self.fin_edge_p.append(points[start:split_idx])
+                        start = split_idx
+                if start < n:
+                    self.fin_edge_p.append(points[start:])
             else:
-                bbox = (min(x_coords), min(y_coords), max(x_coords)-min(x_coords), max(y_coords)-min(y_coords))
-            
-            cluster[target_id] = {
-                'mask': mask,
-                'points': points,
-                'center': (centroid_x, centroid_y),
-                'bbox': bbox,
-                'velocity': (0, 0),
-                'direction': 0,
-                'radius': 0
-            }
+                self.fin_edge_p.append(points)
 
-        frame_data['cluster'] = cluster
-
-
-    def _extract_points_with_flow(self, mask):
+    def _to_mask(self):
         """
-        从掩码区域提取光流信息，结果存入实例变量
+        对最终划分边缘，计算弧度填充圆，再按照价值目标裁剪，得到最终区分的目标
+        转化为ob
+
+        输入：self.mask，self.fin_edge_p
+        输出：self.fin_mask
+              self.last["ob"] = {id: {"center": (x,y), "radius": r, "direction": deg, "velocity": 速度标量}}
+        """
+        self.last["ob"] = {}
         
-        输入：mask(布尔掩码)
-        输出：self._temp_points (列表 [(angle, x, y, vx, vy), ...])
-        """
-        if self.last_light_direct is None or mask is None:
-            self._temp_points = []
-            return
-
-        y_coords, x_coords = np.where(mask)
-        if len(y_coords) == 0:
-            self._temp_points = []
-            return
-
-        vx_vals = self.last_light_direct[y_coords, x_coords, 0]
-        vy_vals = self.last_light_direct[y_coords, x_coords, 1]
-
-        # 计算角度
-        angles = np.arctan2(vy_vals, vx_vals) * 180 / np.pi
-        angles[angles < 0] += 360
-
-        points = []
-        for i in range(len(y_coords)):
-            points.append((angles[i], int(x_coords[i]), int(y_coords[i]), 
-                          float(vx_vals[i]), float(vy_vals[i])))
-        self._temp_points = points
-
-
-    def _angle_clustering(self):
-        """
-        方向聚类：按角度分组，结果存入 self._temp_angle_groups
+        h, w = self.last['frame'].shape if self.last['frame'] is not None else (0, 0)
         
-        输入：self._temp_points
-        输出：self._temp_angle_groups (分组后的列表)
-        """
-        points = self._temp_points
-        if not points:
-            self._temp_angle_groups = []
-            return
-        
-        points.sort(key=lambda p: p[0])
-        angle_diff = lambda a, b: min(abs(a - b), 360 - abs(a - b))
-
-        groups = []
-        cur_group = [points[0]]
-        for i in range(1, len(points)):
-            if angle_diff(points[i][0], points[i-1][0]) > self.angle_threshold:
-                groups.append(cur_group)
-                cur_group = [points[i]]
-            else:
-                cur_group.append(points[i])
-        if cur_group:
-            groups.append(cur_group)
-        self._temp_angle_groups = groups
-
-
-    def _reconstruct_mask_from_points(self, points, shape):
-        """
-        从点集重建掩码
-        
-        输入：points列表 [(angle, x, y, vx, vy), ...], shape(图像形状)
-        输出：mask(布尔掩码)
-        """
-        mask = np.zeros(shape, dtype=bool)
-        for _, x, y, _, _ in points:
-            if 0 <= y < shape[0] and 0 <= x < shape[1]:
-                mask[y, x] = True
-        return mask
-
-
-    def _split_single_cluster_by_flow(self, target_data):
-        """
-        根据光流方向分割同一连通域内方向不同的点
-        
-        输入：target_data(单个物体数据)
-        输出：self._temp_split_objects (分割后的物体列表)
-        """
-        self._extract_points_with_flow(target_data['mask'])
-        if len(self._temp_points) < self.cluster_threshold:
-            self._temp_split_objects = [target_data]
-            return
-
-        self._angle_clustering()
-        if len(self._temp_angle_groups) <= 1:
-            self._temp_split_objects = [target_data]
-            return
-
-        # 多个方向，需要分割
-        new_objects = []
-        for group in self._temp_angle_groups:
-            if len(group) < 5:
+        for edge_points in self.fin_edge_p:
+            if len(edge_points) < 3:
                 continue
-
-            # 提取该组点的坐标和光流
-            xs = [p[1] for p in group]
-            ys = [p[2] for p in group]
-            vxs = [p[3] for p in group]
-            vys = [p[4] for p in group]
-
-            # 计算外接圆
-            center_x = sum(xs) / len(xs)
-            center_y = sum(ys) / len(ys)
-            radius = max(((x - center_x)**2 + (y - center_y)**2) ** 0.5 
-                        for x, y in zip(xs, ys))
-
-            # 计算平均速度和方向
-            avg_vx = sum(vxs) / len(vxs)
-            avg_vy = sum(vys) / len(vys)
-            direction = np.arctan2(avg_vy, avg_vx) * 180 / np.pi
-            if direction < 0:
-                direction += 360
-
-            # 重建掩码
-            mask = self._reconstruct_mask_from_points(group, target_data['mask'].shape)
-
-            new_obj = {
-                'mask': mask,
-                'points': group,
-                'center': (center_x, center_y),
-                'radius': radius,
-                'velocity': (avg_vx, avg_vy),
-                'direction': direction,
-                'bbox': target_data.get('bbox', (0, 0, 0, 0))
-            }
-            new_objects.append(new_obj)
-
-        self._temp_split_objects = new_objects if new_objects else [target_data]
-
-
-    def _split_by_flow_direction(self):
-        """
-        光流法分割：用 last->next 的光流，去分割 last['cluster']（运动物体）
-        因为光流表示的是 last 帧中的点运动到 next 帧的向量，
-        所以应该分割 last 帧中的物体，而不是 next
-        
-        输入：self.last['cluster'], self.last_light_direct
-        输出：更新 self.last['cluster'] (分割后的物体)
-        """
-        if self.last['cluster'] is None or self.last_light_direct is None:
-            return
-
-        new_cluster = {}
-
-        for target_id, target_data in self.last['cluster'].items():
-            # 对该物体的掩码区域进行光流方向分割
-            self._split_single_cluster_by_flow(target_data)
-
-            for obj in self._temp_split_objects:
-                new_id = self._get_new_id()
-                new_cluster[new_id] = {
-                    'mask': obj['mask'],
-                    'points': obj['points'],
-                    'center': obj['center'],
-                    'radius': obj['radius'],
-                    'velocity': obj['velocity'],
-                    'direction': obj['direction']
-                }
-
-        self.last['cluster'] = new_cluster
-
-
-    def _cluster_to_ob(self, cluster):
-        """
-        将 cluster 转化为 ob 格式（输出用），直接修改传入的 ob 字典
-        
-        输入：cluster(物体字典，含完整信息)
-        输出：ob(精简格式 {"id": {"center": (x,y), "radius": r, "direction": deg, "velocity": (vx,vy)}})
-        """
-        if not cluster:
-            return {}
-        ob = {}
-        for target_id, data in cluster.items():
-            ob[target_id] = {
-                'center': data.get('center', (0, 0)),
-                'radius': data.get('radius', 0),
-                'direction': data.get('direction', 0),
-                'velocity': data.get('velocity', (0, 0))
-            }
-        return ob
-
-
-    def _predict_and_match_ids(self):
-        """
-        根据 pre['ob'] 预测位置，与 last['ob'] 匹配
-        如果预测位置与实际位置欧氏距离小于阈值，则继承特异标识
-        
-        输入：self.pre['ob'], self.last['ob'], self.pre['timestamp'], self.last['timestamp']
-        输出：更新 self.last['ob'] 中的 ID（继承后的标识）
-        """
-        if self.pre['ob'] is None or self.last['ob'] is None:
-            return
-
-        # 计算实际时间差
-       
-        dt = self.last['timestamp'] - self.pre['timestamp']
-        # 对 pre 中每个物体，预测其在当前帧的位置
-        predictions = []
-        for obj_id, obj_data in self.pre['ob'].items():
-            cx, cy = obj_data['center']
-            vx, vy = obj_data['velocity']
-            pred_cx = cx + vx * dt
-            pred_cy = cy + vy * dt
-            predictions.append((obj_id, (pred_cx, pred_cy)))
-
-        # 匹配 last['ob'] 中的物体
-        last_ob = self.last['ob'].copy()
-        matched_pre_ids = set()
-        matched_last_ids = set()
-        new_last_ob = {}
-
-        # 先处理匹配的物体
-        for pre_id, pred_pos in predictions:
-            best_match_id = None
-            best_dist = 15.0  # 距离阈值（像素）
             
-            for last_id, last_data in last_ob.items():
-                if last_id in matched_last_ids:
+            # 计算最小外接圆
+            points_float = edge_points.astype(np.float32)
+            (rx, ry), r = cv2.minEnclosingCircle(points_float)
+            rx, ry = int(round(rx)), int(round(ry))
+            r = int(round(r))
+            
+            # 创建圆形掩码
+            cir = np.zeros((h, w), dtype=np.uint8)
+            cv2.circle(cir, (rx, ry), r, 1, -1)
+            
+            # 与原始mask求交
+            combined_mask = None
+            for orig_mask in self.mask:
+                if orig_mask.shape != cir.shape:
                     continue
-                last_pos = last_data['center']
-                dist = ((pred_pos[0] - last_pos[0])**2 + (pred_pos[1] - last_pos[1])**2) ** 0.5
-                if dist < best_dist:
-                    best_dist = dist
-                    best_match_id = last_id
-
-            if best_match_id is not None:
-                matched_pre_ids.add(pre_id)
-                matched_last_ids.add(best_match_id)
-                # 继承 pre 的 ID，保留 last 的数据
-                new_last_ob[pre_id] = last_ob[best_match_id]
+                intersection = cv2.bitwise_and(orig_mask, cir)
+                if np.sum(intersection) > 0:
+                    if combined_mask is None:
+                        combined_mask = intersection
+                    else:
+                        combined_mask = cv2.bitwise_or(combined_mask, intersection)
+            
+            if combined_mask is None or np.sum(combined_mask) == 0:
+                continue
+            
+            # 最终结果圆心和半径
+            points_final = np.column_stack(np.where(combined_mask > 0))
+            if len(points_final) < 3:
+                continue
+            
+            (cx, cy), cr = cv2.minEnclosingCircle(points_final.astype(np.float32))
+            cx, cy, cr = int(round(cx)), int(round(cy)), int(round(cr))
+            
+            # 计算平均方向
+            dir_angles = []
+            vel_values = []
+            for y, x in points_final:
+                angle = self.last_light_direct[y, x] if self.last_light_direct is not None else np.nan
+                v_val = self.last_light_v[y, x] if self.last_light_v is not None else np.nan
+                if not np.isnan(angle):
+                    dir_angles.append(angle)
+                if not np.isnan(v_val):
+                    vel_values.append(v_val)
+            
+            dir_mean = np.mean(dir_angles) if dir_angles else 0.0
+            v_mean = np.mean(vel_values) if vel_values else 0.0
+            
+            # 计算速度标量 (像素/秒)
+            if self.last["timestamp"] is not None and self.next["timestamp"] is not None:
+                dt = abs(self.next["timestamp"] - self.last["timestamp"])
+                velocity = v_mean / dt if dt > 0 else 0.0
             else:
-                # 没有匹配的，保留原 pre_id？不，pre 是上一帧的，不应该出现在当前帧
-                pass
+                velocity = 0.0
+            
+            ob_id = self._id_()
+            self.last["ob"][ob_id] = {
+                "center": (cx, cy),
+                "radius": cr,
+                "direction": dir_mean,
+                "velocity": velocity
+            }
 
-        # 添加未匹配的 last 物体（新出现的物体）
-        for last_id, last_data in last_ob.items():
-            if last_id not in matched_last_ids:
-                new_last_ob[last_id] = last_data
+    def pull(self):
+        """将识别结果放入输出队列"""
+        self.out_queue.put(self.last["ob"])
 
-        self.last['ob'] = new_last_ob
-
-
-    def _update_ob_velocity(self):
-        """
-        更新 next['ob'] 中物体的速度
-        通过比较 last 和 next 的位置差计算实际速度
-        
-        输入：self.last['ob'], self.next['ob'], self.last['timestamp'], self.next['timestamp']
-        输出：更新 self.next['ob'] 中的 velocity
-        """
-        if self.last['ob'] is None or self.next['ob'] is None:
+    def reco(self):
+        """执行完整的识别流程"""
+        self._dataup()
+        if self.last['frame'] is None:
             return
-
-        # 计算时间差
-      
-        dt = self.next['timestamp'] - self.last['timestamp']
-
-        for next_id, next_data in self.next['ob'].items():
-            best_match_id = None
-            best_dist = 15.0
-            
-            for last_id, last_data in self.last['ob'].items():
-                last_pos = last_data['center']
-                next_pos = next_data['center']
-                dist = ((next_pos[0] - last_pos[0])**2 + (next_pos[1] - last_pos[1])**2) ** 0.5
-                if dist < best_dist:
-                    best_dist = dist
-                    best_match_id = last_id
-
-            if best_match_id is not None:
-                last_data = self.last['ob'][best_match_id]
-                last_pos = last_data['center']
-                next_pos = next_data['center']
-                vx = (next_pos[0] - last_pos[0]) / dt
-                vy = (next_pos[1] - last_pos[1]) / dt
-                self.next['ob'][next_id]['velocity'] = (vx, vy)
-
-
-    def _reco(self):
-        """
-        识别主函数：串联所有处理步骤
-        
-        处理流程：
-        1. 对 last 帧做连通域分割（得到 last['cluster']）
-        2. 计算 last->next 的光流
-        3. 用光流分割 last['cluster']（区分方向不同的运动物体）
-        4. last['cluster'] 转化为 last['ob']
-        5. ID 继承（用 pre 和 last 匹配）
-        6. 对 next 帧做连通域分割（得到 next['cluster']）
-        7. next['cluster'] 转化为 next['ob']
-        8. 速度更新（用 last 和 next 匹配计算速度）
-        
-        输出：self.next['ob']（最终输出）
-        """
-        # 对 last 帧做连通域分割
-        if self.last['frame'] is not None:
-            self._segment_connected_components('last')
-            
-            # 计算光流（last -> next）
-            self._calc_optical_flow()
-            
-            # 用光流分割 last['cluster']
-            if self.last['cluster'] is not None:
-                self._split_by_flow_direction()
-            
-            # last['cluster'] 转化为 last['ob']
-            self.last['ob'] = self._cluster_to_ob(self.last['cluster'])
-            
-            # ID 继承（用 pre 和 last 匹配）
-            self._predict_and_match_ids()
-        
-        # 对 next 帧做连通域分割
+        self._connected()
+        self._to_edge()
         if self.next['frame'] is not None:
-            self._segment_connected_components('next')
-            
-            # next['cluster'] 转化为 next['ob']
-            self.next['ob'] = self._cluster_to_ob(self.next['cluster'])
-            
-            # 更新速度信息（用 last 和 next 匹配）
-            self._update_ob_velocity()
-
+            self._flow()
+        self._to_flaw()
+        self._to_mask()
 
     def _run(self):
-        """
-        主运行循环：控制处理帧率上限，串联完整工作流
-        """
         last_time = time.time()
         min_interval = 1.0 / self.fps
 
@@ -533,24 +360,37 @@ class MoveReco:
             elapsed = current_time - last_time
 
             if elapsed >= min_interval:
-                self._dataup()
-                self._reco()
-                if self.next['frame'] is not None:
-                    result = Result(
-                        timestamp=self.next['frame'].timestamp,
-                        objects=self.next['ob']
-                    )
-                    self.pre_result = result
-                    if self.pre_result is not None:
-                        try:
-                            self.out_queue.put(self.pre_result, block=False)
-                        except:
-                            pass
-
+                self.reco()
+                self.pull()
                 last_time = current_time
             else:
                 time.sleep(min_interval - elapsed)
 
+    def start(self):
+        run_thread = threading.Thread(target=self._run, daemon=True)
+        run_thread.start()
+        return run_thread
 
-    def stop(self):
-        self.is_life = False
+
+
+
+
+
+
+"""
+   暂时不知道怎么写
+    def _inherit(self):
+
+	对pre帧目标进行预测，根据预测角度与欧式距离进行继承id
+	实现目标的跟踪
+	输入：self.pre["ob"],self.last["ob"]
+	输出：self.last["ob"]
+
+	fore_last={}
+	pra_plasce=[]
+	for 遍历字典self.pre["ob"]：
+		fore_last=(dir,fx,fy)(self.pre["ob"]={"center": (cx,cy), "radius":cr, "direction":dir , "velocity": v},
+						dir继承"direction":dir 
+						位置用速度和时间差计算，时间差是self.pre["timestamp"]-self.["timestamp"],绝对值）
+
+"""

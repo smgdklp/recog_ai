@@ -488,6 +488,35 @@ class MoveFrame:
 
 
 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 import cv2
 import numpy as np
 import threading
@@ -504,21 +533,11 @@ from sklearn.cluster import DBSCAN
 
 所谓reco部分都是在更新last
 
-做last和next的光流，self.last_light_direct保存移动方向图
-
-    last帧connectedComponentsWithStats，分离labels出不同物体掩码，形态学边缘检测，核大小 5x5
-    对照光流图标注每物体的像素的信息保存到self.last_cluster，数据结构为{“特异标识”：[[self.last_light_direct对应位置的方向参数，x,y],....分割物体的点集的点集]}
-
-    last_cluster每个物体尝试做二次分割，遍历每一个值，按self.last_light_direct对应位置的方向参数大小顺序排布每一个值的列表，按照angle_diff = lambda a, b: min(abs(a - b), 360 - abs(a - b))，如果存在大于self.cluster_threshold数量的异类则分割。分割的物体赋予新的特异标识“特异标识”：[[self.last_light_direct对应位置的方向参数，x,y],....分割物体的点集的点集]}
-，删掉原来的物体，所有保存为self.cluster[特异标识,[[方向，x,y],....的点集]]
-
-    更新到ob，遍历每一个self.cluster,计算最大外接圆半径，最大外接圆坐标，方向，速度，保存到self.last.ob={"特异标识"：字典{最大外接圆半径，最大外接圆坐标，方向，速度}}
-
-对于pre帧是预测继承id，实现跟踪
-
-	遍历pre.ob内物体，圆心位置,速度,和速度方向和timestamp差估计位置，如果预测位置和last.ob相差欧式距离为10且方向 self.angle_threshold以内，则last.ob内物体继承对应特异标识
+继承还是先放一下吧。。。。。。
 
 result是根据last.ob帧的输出
+
+pov:孩子们注意注释接口和数据类型问题就不会乱。。。。。。
 '''
 
 
@@ -538,18 +557,22 @@ class MoveReco:
 
         self.fps = fps
         self.is_life = True
+	self.cut=cut（四位列表，窗口参数，用于在原图像上裁剪有价值区域）
 
         self.result = None
 
-        self.angle_threshold = angle_threshold
-        self.cluster_threshold = cluster_threshold
-        self.gray_threshold = gray_threshold
+        self.angle_threshold = angle_threshold=24
+        self.cluster_threshold = cluster_threshold=3
+        self.gray_threshold = gray_threshold=0.46
 
-	self.mask=[]
-	self.edge_mask=[]
-	self.last_cluster={}
+	self.mask=#初筛价值目标,01掩码
+	self.edge_mask=[]#边缘提取目标，掩码
+	self.fin_edge_p=[]#边缘提取二次分割，点集
+	self.fin_mask=[]#初筛目标二次分割得到最终目标，掩码
         self.last_light_direct = None   # 缓存光流图方向阵（last -> next）
+	self.last_light_v=None#缓存速度阵图
         self.next_target_id = 0          # 用于生成唯一标识
+	
 
     def _id_(self):
         """生成新的唯一标识"""
@@ -557,7 +580,7 @@ class MoveReco:
         return self.next_target_id
     def _gray_image_(self, img, xy):
         """
-        图像预处理：灰度化、归一化、阈值过滤、忽略区域处理
+        图像预处理：灰度化、归一化、阈值过滤、忽略区域过滤和有效区域裁剪
  
         输入：img(BGR三通道), xy(忽略区域坐标 [x1,y1,x2,y2])
         输出：processed_img(灰度图 float32 0-1)
@@ -573,6 +596,7 @@ class MoveReco:
             h = y2 - y1
             if w > 0 and h > 0:
                 gray[y1:y1+h, x1:x1+w] = 0
+	（将self.cut部分裁剪出来）
 
         return gray
 
@@ -607,27 +631,6 @@ class MoveReco:
         self.next['frame'] = gray_img
         self.next['cluster'] = None
         self.next['ob'] = None
-
-    def _flow(self):
-        """
-        光流法：计算 last 和 next 之间的光流场（从 last 到 next）
- 
-        输入：self.last['frame'].img, self.next['frame'].img
-        输出：self.last_light_direct (光流场)
-        """
-        if self.last['frame'] is None or self.next['frame'] is None:
-            self.last_light_direct = None
-            return
-
-        pre_img = self.last['frame']
-        last_img = self.next['frame']
-
-        # 计算稠密光流
-        flow = cv2.calcOpticalFlowFarneback(
-            pre_img, last_img, None,
-            0.5, 3, 15, 3, 5, 1.2, 0
-        )
-        self.last_light_direct = flow
  
 
     def _connected(self):
@@ -638,42 +641,148 @@ class MoveReco:
       """
         img=self.last["frame"]
 	cv2.connectedComponentsWithStats
-	(分离labels出不同物体掩码，保存到掩码列表self.mask=[]
+	(分离labels物体掩码，物体为1，背景为0，保存到掩码列表self.mask=#数组
+
 
     def _to_edge(self):
 	"""
-	mask边缘提取,目标以边缘为依据
+	mask边缘提取，二宽度
 	输入：self.mask
-	输出：self.egde_mask
+	输出：self.egde_mask，01掩码数组
 	"""
 	for index,m in enumar(self.mask):
 		cv2.morphologyEx(m,cv2.IMREAD_GRAYSCALE)
 		kernel = np.ones((5, 5), np.uint8)#二宽度边缘
 		edge_mask = cv2.morphologyEx(mask, cv2.MORPH_GRADIENT, kernel)
-		self.egde_mask.append(edge_mask)
+		self.egde_mask.append(edge_mask)#01掩码数组
+
+
+    def _flow(self):
+        """
+        计算 last 和 next 之间的稀疏光流，只要转化为360制角度的等大数组
+	 
+        输入：self.last['frame'].img, self.next['frame'].img
+		self.egde_mask
+        输出：self.last_light_direct，nan和float32的360角度的数组
+		self.last_light_v,nan和速度的数组
+
+        """
+         
+        last_img = self.last['frame']
+        next _img = self.next['frame']
+	prevPts=(ndarray (N,1,2),提取self.edge_mask中所有数组元素的非零点位置，转化为数组输入
+
+        # 稀疏光流计算
+        next_pts, status, err = cv2.calcOpticalFlowPyrLK(
+	last_img  , next _img , prevPts, 
+	nextPts, status, err, 
+        winSize=(21，21), maxLevel=3, 
+	criteria=(cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_COUNT, 30, 0.01),
+    flags=0, minEigThreshold=1e-4
+)	
+	v=（只保留magnitude成功跟踪的点的图到数组，其余点为nan）
+	diract=（只保留成功跟踪的点的图到数组，向量转化为float32的360角度，其余点为nan）
+        self.last_light_direct = flow
+	self.last_light_v=v
+
+
 		
-    def _to_ob(self):
+    def _to_flaw(self):
 	"""
-	将egde_mask依据光流图二次划分重叠物体
-	输入：self.egde_mask，self.mask，self.last_light_direct
-	输出：self.last["ob"]
+	将egde_mask依据光流图二次划分重叠边缘
+	输入：self.egde_mask，self.last_light_direct
+	输出：self.fin_edge_p，点集
 	"""
 	for i in self.egde_mask:
 		cluster=[]
-		(提取每一个在掩码中非零的像素位置，配合self.last_light_direct对应点角度转化为float32的360角度保存到cluster
-		 每个点保存形式（角度，x, y))
+		(提取每一个在掩码中，且在.last_light_direct 非nan的像素位置，每个点保存形式（角度，x, y))
 		cluster按照第一位角度大小排序所有元素
-		cluster数组化3*n 
-		切片角度栏
-		angle_diff = lambda a, b: min(abs(a - b), 360 - abs(a - b))
+		cluster数组化
+		diff = min(abs(angles[i] - angles[i-1]), 360 - abs(angles[i] - angles[i-1]))
+		（根据diff计算相邻cluster角度列相差相差角度，得到grad=narry[(n-1)]	）
+			if 存在元素大于self.angle_threshold
+				j=（提取大于self.angle_threshold的索引点位置数组，int列表按大小顺序排列)
+				（计算j相邻索引点的绝对值差，连续的间断点求中点
+				k=（j索引点合并得到的最终切割索引点）
+				按照k索引点切割cluster得到的点集加到self.fin_edge_p.append()
+			else:
+				self.fin_edge_p.append(cluster)
 		
-		
+				
+     def _to_mask(self):
+	"""	
+	对最终划分边缘，计算弧度填充圆，再按照价值目标裁剪，得到最终区分的目标
+	偷偷转化为ob
 
-		
-		
-	
-		
+	输入：self.mask，self.fin_edge_p
+	输出：self.fin_mask
+			self.last["ob"] ={"id": {"center": (x,y), "radius": r, "direction": deg(360的角度制度, "velocity":速度标量}}
+	"""
+	for i in self.fin_edge_mask:
+		rx,ry,r#圆心坐标和半径
+		(rx, ry), r= cv2.minEnclosingCircle(i)
 
+		cir=数组和self.cut对应尺寸
+		cv.circle(img=cir,cneter=(rx,ry),radius=r
+		,color=1,
+		thickness=-1)
+		
+		fin_mask=(以self.mask为参考，只要在self.mask上同样为1的点）#01值数组掩码
+
+		j=(fin_mask的值为1的元素点集）
+		cx,cy,cr#最终结果的圆心坐标和半径
+		(cx, cy),c r= cv2.minEnclosingCircle(j)
+		
+		dir=(fin_mask内的为1的点且在self.last_light_direct有不为nan的值的平均值
+		x=(fin_mask内的为1的点且在self.last_light_v有不为nan的值的平均值
+		v=x/(self.last["timestamp"]-self.nest["timestamp"]，绝对值)
+
+
+		ob_id=self._id_
+		self.last["ob"][ob_id]={ {"center": (cx,cy), "radius":cr, "direction":dir , "velocity": v}
+		
+"""
+   #暂时不知道怎么写
+    def _inherit(self):
+	"""
+	对pre帧目标进行预测，根据预测角度与欧式距离进行继承id
+	实现目标的跟踪
+	输入：self.pre["ob"],self.last["ob"]
+	输出：self.last["ob"]
+	"""
+	fore_last={}
+	pra_plasce=[]
+	for 遍历字典self.pre["ob"]：
+		fore_last=(dir,fx,fy)(self.pre["ob"]={"center": (cx,cy), "radius":cr, "direction":dir , "velocity": v},
+						dir继承"direction":dir 
+						位置用速度和时间差计算，时间差是self.pre["timestamp"]-self.["timestamp"],绝对值）
+
+"""
+
+    def pull(self):
+        self.out_queue.put(self.last["ob"] )
+    def reco(self):
+	_dataup
+	_conected
+	_to_edge
+	_flaw
+	_to_flaw
+	_to_mask
+
+    def _run(self):
+        last_time = time.time()
+        min_interval = 1.0 / self.fps
+
+        while self.is_life:
+            current_time = time.time()
+            elapsed = current_time - last_time
+
+            if elapsed >= min_interval:
+                self.reco()
+                self.pull()
+                last_time = current_time
+            else:
+                time.sleep(min_interval - elapsed)
     def start(self):
         run_thread = threading.Thread(target=self._run, daemon=True)
         run_thread.start()
@@ -692,113 +801,3 @@ class MoveReco:
 
  "C:\mypy\recog_ai\imgs\flaw" 内的图片按照时间戳命名了
 对相邻时间戳的图片做以下操作，需要改造适配，最后egde_mask每一张掩码非零元素替换为光流图对应位置的角度.最后都得到最后把egde_mask列表添加到新的txt.txt名称为这是第几轮光流图，保存到"C:\mypy\recog_ai\imgs\flaw\result"
-
-
-    def _gray_image_(self, img, xy):
-        """
-        图像预处理：灰度化、归一化、阈值过滤、忽略区域处理
- 
-        输入：img(BGR三通道), xy(忽略区域坐标 [x1,y1,x2,y2])
-        输出：processed_img(灰度图 float32 0-1)
-        """
-
-        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY).astype(np.float32) / 255.0
-
-        gray[gray < self.gray_threshold] = 0
-
-        if xy and len(xy) == 4:
-            x1, y1, x2, y2 = [int(round(v)) for v in xy]
-            w = x2 - x1
-            h = y2 - y1
-            if w > 0 and h > 0:
-                gray[y1:y1+h, x1:x1+w] = 0
-
-        return gray
-
-    def _dataup(self):
-        """
-        数据更新：从队列获取数据，交替接收帧和忽略区域
- 
-        输出：更新 self.pre, self.last, self.next
-        """
-        if self.last['frame'] is not None:
-            self.pre['frame'] = self.last['frame']
-            self.pre['cluster'] = self.last['cluster']
-            self.pre['ob'] = self.last['ob']
-            self.pre['timestamp'] = self.last['timestamp']
-
-        if self.next['frame'] is not None:
-            self.last['frame'] = self.next['frame']
-            self.last['cluster'] = self.next['cluster']
-            self.last['ob'] = self.next['ob']
-            self.last['timestamp'] = self.next['timestamp']
-
-        next_data = self.in_queue.get()
- 
-        xy = next_data[1].xy
-
-        img = next_data[0].img
-        timestamp = next_data[0].timestamp
-
-        self.next['timestamp'] = timestamp
-        gray_img = self._gray_image_(img, ig_xy)
-
-        self.next['frame'] = gray_img
-        self.next['cluster'] = None
-        self.next['ob'] = None
-
-    def _flow(self):
-        """
-        光流法：计算 last 和 next 之间的光流场（从 last 到 next）
- 
-        输入：self.last['frame'].img, self.next['frame'].img
-        输出：self.last_light_direct (光流场)
-        """
-        if self.last['frame'] is None or self.next['frame'] is None:
-            self.last_light_direct = None
-            return
-
-        pre_img = self.last['frame']
-        last_img = self.next['frame']
-
-        # 计算稠密光流
-        flow = cv2.calcOpticalFlowFarneback(
-            pre_img, last_img, None,
-            0.5, 3, 15, 3, 5, 1.2, 0
-        )
-        self.last_light_direct = flow  def _connected(self):
-        """
-        对last二值图像做连通域分析，初步实现目标识别
-        输入：self.last["frame"],
-        输出：self.mask
-      """
-        img=self.last["frame"]
-	cv2.connectedComponentsWithStats
-	(分离labels出不同物体掩码，保存到掩码列表self.mask=[]
-
-    def _to_edge(self):
-	"""
-	mask边缘提取,目标以边缘为依据
-	输入：self.mask
-	输出：self.egde_mask
-	"""
-	for index,m in enumar(self.mask):
-		cv2.morphologyEx(m,cv2.IMREAD_GRAYSCALE)
-		kernel = np.ones((5, 5), np.uint8)#二宽度边缘
-		edge_mask = cv2.morphologyEx(mask, cv2.MORPH_GRADIENT, kernel)
-		self.egde_mask.append(edge_mask)
-		
-    def _to_ob(self):
-	"""
-	将egde_mask依据光流图二次划分重叠物体
-	输入：self.egde_mask，self.mask，self.last_light_direct
-	输出：self.last["ob"]
-	"""
-	for i in self.egde_mask:
-		cluster=[]
-		(提取每一个在掩码中非零的像素位置，配合self.last_light_direct对应点角度转化为float32的360角度保存到cluster
-		 每个点保存形式（角度，x, y))
-
- "C:\mypy\recog_ai\imgs\flaw"
-
-"C:\mypy\recog_ai\imgs\flaw\result"
