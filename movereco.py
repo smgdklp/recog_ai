@@ -45,7 +45,7 @@ class MoveReco:
         self.gray_threshold = gray_threshold
 
         self.mask = []  # 初筛价值目标,01掩码列表
-        self.edge_mask = []  # 边缘提取目标，掩码列表
+        self.edge_mask = []  # 边缘提取目标，01掩码列表
         self.fin_edge_p = []  # 边缘提取二次分割，点集列表
         self.fin_mask = []  # 初筛目标二次分割得到最终目标，掩码列表
         self.last_light_direct = None  # 缓存光流图方向阵（last -> next）
@@ -200,7 +200,7 @@ class MoveReco:
 
     def _to_flaw(self):
         """
-        将edge_mask依据光流图二次划分重叠边缘
+        将edge_mask依据光流图二次划分重叠边缘，输出破碎边缘点集
         输入：self.edge_mask，self.last_light_direct
         输出：self.fin_edge_p，点集列表
         """
@@ -228,7 +228,8 @@ class MoveReco:
             n = len(angles)
             diff = np.zeros(n)
             for i in range(n):
-                diff[i] = min(abs(angles[i] - angles[i-1]), 360 - abs(angles[i] - angles[i-1]))
+                diff[i] = min(abs(angles[i] - angles[i-1]), 
+                              360 - abs(angles[i] - angles[i-1]))
             
             # 查找大于阈值的位置
             large_indices = np.where(diff > self.angle_threshold)[0]
