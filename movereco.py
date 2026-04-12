@@ -88,15 +88,15 @@ class MoveReco:
  
         输出：更新 self.pre, self.last, self.next
         """
-        if self.last['frame'] is not None:
-            self.pre['frame'] = self.last['frame']
-            self.pre['ob'] = self.last['ob']
-            self.pre['timestamp'] = self.last['timestamp']
+        
+        self.pre['frame'] = self.last['frame']
+        self.pre['ob'] = self.last['ob']
+        self.pre['timestamp'] = self.last['timestamp']
 
-        if self.next['frame'] is not None:
-            self.last['frame'] = self.next['frame']
-            self.last['ob'] = self.next['ob']
-            self.last['timestamp'] = self.next['timestamp']
+
+        self.last['frame'] = self.next['frame']
+        self.last['ob'] = self.next['ob']
+        self.last['timestamp'] = self.next['timestamp']
 
         next_data = self.in_queue.get()
 
@@ -269,6 +269,19 @@ class MoveReco:
         
         h, w = self.last['frame'].shape if self.last['frame'] is not None else (0, 0)
         
+        # 记录cut偏移量，用于坐标映射回原图
+        cut_offset_x = 0
+        cut_offset_y = 0
+        if self.cut is not None:
+            cut_offset_x = int(round(self.cut[0]))
+            cut_offset_y = int(round(self.cut[1]))
+        
+        # 合并所有原始mask为一个总掩码数组，用于快速匹配
+        combined_orig_mask = np.zeros((h, w), dtype=np.uint8)
+        for orig_mask in self.mask:
+            if orig_mask.shape == (h, w):
+                combined_orig_mask = cv2.bitwise_or(combined_orig_mask, orig_mask)
+        
         for edge_points in self.fin_edge_p:
             if len(edge_points) < 3:
                 continue
@@ -283,23 +296,14 @@ class MoveReco:
             cir = np.zeros((h, w), dtype=np.uint8)
             cv2.circle(cir, (rx, ry), r, 1, -1)
             
-            # 与原始mask求交
-            combined_mask = None
-            for orig_mask in self.mask:
-                if orig_mask.shape != cir.shape:
-                    continue
-                intersection = cv2.bitwise_and(orig_mask, cir)
-                if np.sum(intersection) > 0:
-                    if combined_mask is None:
-                        combined_mask = intersection
-                    else:
-                        combined_mask = cv2.bitwise_or(combined_mask, intersection)
+            # 数组掩码匹配：直接与合并后的原始mask求交
+            intersection = cv2.bitwise_and(combined_orig_mask, cir)
             
-            if combined_mask is None or np.sum(combined_mask) == 0:
+            if np.sum(intersection) == 0:
                 continue
             
             # 最终结果圆心和半径
-            points_final = np.column_stack(np.where(combined_mask > 0))
+            points_final = np.column_stack(np.where(intersection > 0))
             if len(points_final) < 3:
                 continue
             
@@ -327,9 +331,13 @@ class MoveReco:
             else:
                 velocity = 0.0
             
+            # 将坐标映射回没有cut前的原图坐标
+            original_cx = cx + cut_offset_x
+            original_cy = cy + cut_offset_y
+            
             ob_id = self._id_()
             self.last["ob"][ob_id] = {
-                "center": (cx, cy),
+                "center": (original_cx, original_cy),
                 "radius": cr,
                 "direction": dir_mean,
                 "velocity": velocity
