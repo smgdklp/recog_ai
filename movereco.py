@@ -12,7 +12,7 @@ import time
 
 所谓reco部分都是在更新last
 
-继承还是先放一下吧。。。。。。
+继承还是先放一下吧。。。。。。  
 
 result是根据last.ob帧的输出
 
@@ -36,7 +36,6 @@ class MoveReco:
 
         self.fps = fps
         self.is_life = True
-        self.cut = None  # 四位列表，窗口参数，用于在原图像上裁剪有价值区域
 
         self.result = None
 
@@ -75,10 +74,7 @@ class MoveReco:
             if w > 0 and h > 0:
                 gray[y1:y1+h, x1:x1+w] = 0
 
-        # 将self.cut部分裁剪出来
-        if self.cut is not None:
-            x1, y1, x2, y2 = [int(round(v)) for v in self.cut]
-            gray = gray[y1:y2, x1:x2]
+
 
         return gray
 
@@ -270,12 +266,6 @@ class MoveReco:
         
         h, w = self.last['frame'].shape if self.last['frame'] is not None else (0, 0)
         
-        # 记录cut偏移量，用于坐标映射回原图
-        cut_offset_x = 0
-        cut_offset_y = 0
-        if self.cut is not None:
-            cut_offset_x = int(round(self.cut[0]))
-            cut_offset_y = int(round(self.cut[1]))
         
         # 合并所有原始mask为一个总掩码数组，用于快速匹配
         combined_orig_mask = np.zeros((h, w), dtype=np.uint8)
@@ -332,9 +322,8 @@ class MoveReco:
             else:
                 velocity = 0.0
             
-            # 将坐标映射回没有cut前的原图坐标
-            original_cx = cx + cut_offset_x
-            original_cy = cy + cut_offset_y
+            original_cx = cx 
+            original_cy = cy 
             
             ob_id = self._id_()
             self.last["ob"][ob_id] = {
