@@ -10,7 +10,7 @@ class ImageProcessor:
     """离线处理图片文件夹的运动检测器"""
     
     def __init__(self, angle_threshold=15, cluster_threshold=10, 
-                 min_threshold=10, gray_threshold=0.46, dbscan_eps=5, dbscan_min_samples=3):
+                 min_threshold=10, gray_threshold=0.46, dbscan_eps=0.3, dbscan_min_samples=3):
         
         self.angle_threshold = angle_threshold
         self.cluster_threshold = cluster_threshold
@@ -132,40 +132,73 @@ class ImageProcessor:
         self.flow[y_min:y_max, x_min:x_max] = flow_roi
     
     def _to_flaw(self):
-        """DBSCAN聚类分割边缘点"""
+        """
+        修复：将edge_mask依据光流方向二次划分重叠边缘
+        输入：self.edge_mask，self.flow
+        输出：self.fin_edge_p，点集列表
+        """
         self.fin_edge_p = []
         
         if self.flow is None:
+            # 如果没有光流数据，直接把edge_mask的点集作为fin_edge_p
+            for edge_mask in self.edge_mask:
+                ys, xs = np.where(edge_mask > 0)
+                if len(ys) >= 3:
+                    points = np.column_stack((xs, ys))  # 注意：保存为(x,y)格式
+                    self.fin_edge_p.append(points)
             return
         
         for edge_mask in self.edge_mask:
+            # 提取边缘点
             ys, xs = np.where(edge_mask > 0)
             if len(ys) < 3:
                 continue
+                
+            # 提取光流向量
+            flow_vectors = self.flow[ys, xs]  # shape: [n, 2]
             
-            # 提取速度矢量
-            v_flow = []
-            for y, x in zip(ys, xs):
-                vx = self.flow[y, x, 0]
-                vy = self.flow[y, x, 1]
-                v_flow.append([vx, vy])
-            v_flow = np.array(v_flow)
+            # 计算每个点的运动方向和速度
+            angles = np.arctan2(flow_vectors[:, 1], flow_vectors[:, 0]) * 180 / np.pi
+            angles[angles < 0] += 360
             
-            # DBSCAN聚类
-            clustering = DBSCAN(eps=self.dbscan_eps, min_samples=self.dbscan_min_samples).fit(v_flow)
-            labels = clustering.labels_
+            speeds = np.sqrt(flow_vectors[:, 0]**2 + flow_vectors[:, 1]**2)
             
-            unique_labels = set(labels)
+            # 创建特征向量 [cos(angle), sin(angle), speed_normalized]
+            # 使用方向为主，速度为辅的特征
+            features = np.column_stack([
+                np.cos(np.deg2rad(angles)),
+                np.sin(np.deg2rad(angles)),
+                speeds / (speeds.max() + 1e-6)  # 归一化速度
+            ])
+            
+            # DBSCAN聚类（基于方向特征）
+            clustering = DBSCAN(eps=self.dbscan_eps, min_samples=self.dbscan_min_samples).fit(features)
+            cluster_labels = clustering.labels_
+            
+            # 根据聚类结果分组
+            unique_labels = set(cluster_labels)
             for label in unique_labels:
-                if label == -1:
+                if label == -1:  # 跳过噪声点
                     continue
-                mask_idx = np.where(labels == label)[0]
-                edge_p = np.column_stack([xs[mask_idx], ys[mask_idx]])
-                if len(edge_p) >= 3:
-                    self.fin_edge_p.append(edge_p)
+                
+                # 获取属于当前聚类的点索引
+                cluster_indices = np.where(cluster_labels == label)[0]
+                
+                if len(cluster_indices) < 3:
+                    continue
+                
+                # 提取点的坐标，保存为(x,y)格式
+                cluster_xs = xs[cluster_indices]
+                cluster_ys = ys[cluster_indices]
+                cluster_points = np.column_stack((cluster_xs, cluster_ys))
+                
+                self.fin_edge_p.append(cluster_points)
     
     def _to_mask(self):
-        """生成最终目标掩码和OB信息"""
+        """
+        修复：对最终聚类点，计算外接圆，得到最终目标
+        输出：self.fin_mask, self.last["ob"]
+        """
         self.last["ob"] = {}
         self.fin_mask = []
         
@@ -179,6 +212,7 @@ class ImageProcessor:
             if len(edge_points) < 3:
                 continue
             
+            # edge_points现在是(x,y)格式，直接使用
             points_float = edge_points.astype(np.float32)
             (rx, ry), r = cv2.minEnclosingCircle(points_float)
             rx, ry, r = int(round(rx)), int(round(ry)), int(round(r))
@@ -190,11 +224,14 @@ class ImageProcessor:
             if np.sum(intersection) < 10:
                 continue
             
-            points_final = np.column_stack(np.where(intersection > 0))
-            if len(points_final) < 3:
+            # 获取交点坐标
+            final_ys, final_xs = np.where(intersection > 0)
+            if len(final_ys) < 3:
                 continue
             
-            (cx, cy), cr = cv2.minEnclosingCircle(points_final.astype(np.float32))
+            # 转换为(x,y)格式
+            points_final = np.column_stack((final_xs, final_ys)).astype(np.float32)
+            (cx, cy), cr = cv2.minEnclosingCircle(points_final)
             cx, cy, cr = int(round(cx)), int(round(cy)), int(round(cr))
             
             # 保存最终掩码
@@ -202,29 +239,36 @@ class ImageProcessor:
             cv2.circle(final_mask, (cx, cy), cr, 1, -1)
             self.fin_mask.append(final_mask)
             
-            # 计算平均方向
-            dir_angles = []
-            vel_values = []
-            if self.flow is not None:
-                for y, x in points_final:
-                    vx = self.flow[y, x, 0]
-                    vy = self.flow[y, x, 1]
-                    if abs(vx) > 0.01 or abs(vy) > 0.01:
-                        angle = np.arctan2(vy, vx) * 180 / np.pi
-                        if angle < 0:
-                            angle += 360
-                        dir_angles.append(angle)
-                        vel_values.append(np.sqrt(vx**2 + vy**2))
+            # 计算运动信息
+            dir_mean = 0.0
+            velocity = 0.0
             
-            dir_mean = np.mean(dir_angles) if dir_angles else 0.0
-            v_mean = np.mean(vel_values) if vel_values else 0.0
+            if self.flow is not None and len(final_ys) > 0:
+                flow_at_points = self.flow[final_ys, final_xs]
+                
+                # 计算方向
+                angles = np.arctan2(flow_at_points[:, 1], flow_at_points[:, 0]) * 180 / np.pi
+                angles[angles < 0] += 360
+                
+                # 过滤掉静止点（速度很小的点）
+                speeds = np.sqrt(flow_at_points[:, 0]**2 + flow_at_points[:, 1]**2)
+                moving_mask = speeds > 0.1
+                
+                if np.sum(moving_mask) > 0:
+                    dir_mean = np.mean(angles[moving_mask])
+                    v_mean = np.mean(speeds[moving_mask])
+                else:
+                    dir_mean = np.mean(angles)
+                    v_mean = np.mean(speeds)
+                
+                velocity = v_mean
             
             ob_id = self._id_()
             self.last["ob"][ob_id] = {
                 "center": (cx, cy),
                 "radius": cr,
                 "direction": dir_mean,
-                "velocity": v_mean
+                "velocity": velocity
             }
     
     def process_frame_pair(self, idx, pre_img_bgr, last_img_bgr, next_img_bgr, 
@@ -337,6 +381,10 @@ class ImageProcessor:
         cv2.imwrite(str(save_dir / f"round_{idx:04d}_result.jpg"), result_img)
         
         print(f"  识别到 {len(self.last['ob'])} 个物体")
+        for ob_id, ob_info in self.last["ob"].items():
+            print(f"    ID:{ob_id} 位置:({ob_info['center'][0]},{ob_info['center'][1]}) "
+                  f"半径:{ob_info['radius']} 方向:{ob_info['direction']:.1f}° 速度:{ob_info['velocity']:.1f}px/frame")
+        
         return len(self.last['ob'])
     
     def run(self, input_folder, output_folder):
@@ -347,17 +395,30 @@ class ImageProcessor:
         
         # 获取所有PNG图片，按文件名排序
         png_files = sorted(input_path.glob("*.png"))
+        if len(png_files) == 0:
+            png_files = sorted(input_path.glob("*.jpg"))
+        
         print(f"找到 {len(png_files)} 张图片")
         
         if len(png_files) < 3:
             print("图片数量不足3张，无法处理")
             return
         
+        total_objects = 0
         # 逐组处理
         for idx in range(len(png_files) - 2):
             pre_img = cv2.imread(str(png_files[idx]))
             last_img = cv2.imread(str(png_files[idx + 1]))
             next_img = cv2.imread(str(png_files[idx + 2]))
+            
+            if pre_img is None or last_img is None or next_img is None:
+                print(f"跳过第 {idx+1} 组：无法读取图片")
+                continue
+            
+            # 确保所有图片大小一致
+            if pre_img.shape != last_img.shape or last_img.shape != next_img.shape:
+                print(f"跳过第 {idx+1} 组：图片大小不一致")
+                continue
             
             pre_ts = png_files[idx].stem
             last_ts = png_files[idx + 1].stem
@@ -366,21 +427,36 @@ class ImageProcessor:
             # 重置ID
             self.next_target_id = 0
             
-            self.process_frame_pair(idx + 1, pre_img, last_img, next_img,
-                                     pre_ts, last_ts, next_ts, output_path)
+            num_objects = self.process_frame_pair(idx + 1, pre_img, last_img, next_img,
+                                                   pre_ts, last_ts, next_ts, output_path)
+            total_objects += num_objects
         
-        print(f"\n处理完成！结果保存在 {output_path}")
+        print(f"\n处理完成！总共识别到 {total_objects} 个物体")
+        print(f"结果保存在 {output_path}")
 
 
 # ==================== 主程序入口 ====================
 if __name__ == "__main__":
+    # 修改为你的实际路径
     input_folder = "C:/mypy/recog_ai/imgs/flaw"
     output_folder = "C:/mypy/recog_ai/imgs/flaw/result"
     
+    # 创建输出文件夹（如果不存在）
+    Path(output_folder).mkdir(parents=True, exist_ok=True)
+    
+    # 检查输入文件夹是否存在
+    if not Path(input_folder).exists():
+        print(f"错误：输入文件夹不存在 {input_folder}")
+        print("请修改 input_folder 变量为你的实际图片文件夹路径")
+        exit(1)
+    
+    # 创建处理器实例
+    # dbscan_eps=0.3 适合方向特征聚类，可以根据实际情况调整
     processor = ImageProcessor(
-        gray_threshold=0.46,
-        dbscan_eps=5,
-        dbscan_min_samples=3
+        gray_threshold=0.46,      # 灰度阈值
+        dbscan_eps=0.3,           # DBSCAN聚类半径（方向特征用0.3，原始速度用5）
+        dbscan_min_samples=3      # 最小样本数
     )
     
+    # 运行处理
     processor.run(input_folder, output_folder)

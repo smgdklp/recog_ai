@@ -21,7 +21,7 @@ last核nest帧差，提取有效位置，稠密光流
 
 最终依据离散类聚点输出最大外界圆参数
 
-继承还是先放一下吧。。。。。。  
+继承还是先放一下吧。。。。。  
 
 result是根据last.ob帧的输出
 
@@ -214,38 +214,70 @@ class MoveReco:
 
     def _to_flaw(self):
         """
-        将edge_mask依据光流图二次划分重叠边缘，无监督类聚
+        修复：将edge_mask依据光流方向二次划分重叠边缘，无监督类聚
         输入：self.edge_mask，self.flow
         输出：self.fin_edge_p，点集列表
         """
         self.fin_edge_p = []
         
         if self.flow is None:
+            # 如果没有光流数据，直接把edge_mask的点集作为fin_edge_p
+            for edge_mask in self.edge_mask:
+                ys, xs = np.where(edge_mask > 0)
+                if len(ys) >= 3:
+                    points = np.column_stack((ys, xs))
+                    self.fin_edge_p.append(points)
             return
             
         for edge_mask in self.edge_mask:
-            # 掩码提取self.flow中相应点的位置参数得到矢量速度矩阵
+            # 提取边缘点
             ys, xs = np.where(edge_mask > 0)
             if len(ys) < 3:
                 continue
                 
-            # 合成v_flow=[n,2]
-            v_flow = []
-            for y, x in zip(ys, xs):
-                vx = self.flow[y, x, 0]
-                vy = self.flow[y, x, 1]
-                v_flow.append([vx, vy])
+            # 提取光流向量
+            flow_vectors = self.flow[ys, xs]  # shape: [n, 2]
             
-            v_flow = np.array(v_flow)
+            # 计算每个点的运动方向和速度
+            angles = np.arctan2(flow_vectors[:, 1], flow_vectors[:, 0]) * 180 / np.pi
+            angles[angles < 0] += 360
             
-            # DBSCAN聚类
-            clustering = DBSCAN(eps=5, min_samples=3).fit(v_flow)
-            labels = clustering.labels_
-            （
+            speeds = np.sqrt(flow_vectors[:, 0]**2 + flow_vectors[:, 1]**2)
+            
+            # 创建特征向量 [cos(angle), sin(angle), speed_normalized]
+            # 使用方向为主，速度为辅的特征
+            features = np.column_stack([
+                np.cos(np.deg2rad(angles)),
+                np.sin(np.deg2rad(angles)),
+                speeds / (speeds.max() + 1e-6)  # 归一化速度
+            ])
+            
+            # DBSCAN聚类（基于方向特征）
+            clustering = DBSCAN(eps=0.3, min_samples=3).fit(features)
+            cluster_labels = clustering.labels_
+            
+            # 根据聚类结果分组
+            unique_labels = set(cluster_labels)
+            for label in unique_labels:
+                if label == -1:  # 跳过噪声点
+                    continue
+                
+                # 获取属于当前聚类的点索引
+                cluster_indices = np.where(cluster_labels == label)[0]
+                
+                if len(cluster_indices) < 3:
+                    continue
+                
+                # 提取点的坐标
+                cluster_ys = ys[cluster_indices]
+                cluster_xs = xs[cluster_indices]
+                cluster_points = np.column_stack((cluster_ys, cluster_xs))
+                
+                self.fin_edge_p.append(cluster_points)
 
     def _to_mask(self):
         """
-        对最终类聚点，计算弧度填充圆，再按照价值目标裁剪，得到最终区分的目标
+        修复：对最终聚类点，计算弧度填充圆，再按照价值目标裁剪，得到最终区分的目标
         转化为ob
 
         输入：self.mask_labels，self.fin_edge_p
@@ -260,7 +292,7 @@ class MoveReco:
             
         h, w = self.last['frame'].shape if self.last['frame'] is not None else (0, 0)
         
-        # 合并所有原始mask为一个总掩码数组（基于labels）
+        # 创建原始mask的总掩码（基于labels）
         combined_orig_mask = np.zeros((h, w), dtype=np.uint8)
         if self.mask_labels is not None:
             combined_orig_mask = (self.mask_labels > 0).astype(np.uint8)
@@ -271,7 +303,9 @@ class MoveReco:
             
             # 计算最小外接圆
             points_float = edge_points.astype(np.float32)
-            (rx, ry), r = cv2.minEnclosingCircle(points_float)
+            # 注意：cv2.minEnclosingCircle需要(x,y)格式，而点是(y,x)
+            points_xy = points_float[:, [1, 0]]  # 转换(y,x) -> (x,y)
+            (rx, ry), r = cv2.minEnclosingCircle(points_xy)
             rx, ry = int(round(rx)), int(round(ry))
             r = int(round(r))
             
@@ -279,48 +313,55 @@ class MoveReco:
             cir = np.zeros((h, w), dtype=np.uint8)
             cv2.circle(cir, (rx, ry), r, 1, -1)
             
-            # 数组掩码匹配：直接与合并后的原始mask求交
+            # 与原始mask求交
             intersection = cv2.bitwise_and(combined_orig_mask, cir)
             
             if np.sum(intersection) < 10:
                 continue
             
-            # 最终结果圆心和半径
-            points_final = np.column_stack(np.where(intersection > 0))
-            if len(points_final) < 3:
+            # 计算最终圆心和半径
+            points_final_ys, points_final_xs = np.where(intersection > 0)
+            if len(points_final_ys) < 3:
                 continue
             
-            (cx, cy), cr = cv2.minEnclosingCircle(points_final.astype(np.float32))
+            points_final = np.column_stack((points_final_xs, points_final_ys)).astype(np.float32)
+            (cx, cy), cr = cv2.minEnclosingCircle(points_final)
             cx, cy, cr = int(round(cx)), int(round(cy)), int(round(cr))
             
-            # 创建最终掩码并保存
+            # 创建最终掩码
             final_mask = np.zeros((h, w), dtype=np.uint8)
             cv2.circle(final_mask, (cx, cy), cr, 1, -1)
             self.fin_mask.append(final_mask)
             
-            # 计算平均方向（使用光流数据）
-            dir_angles = []
-            vel_values = []
-            if self.flow is not None:
-                for y, x in points_final:
-                    vx = self.flow[y, x, 0]
-                    vy = self.flow[y, x, 1]
-                    if abs(vx) > 0.01 or abs(vy) > 0.01:
-                        angle = np.arctan2(vy, vx) * 180 / np.pi
-                        if angle < 0:
-                            angle += 360
-                        dir_angles.append(angle)
-                        vel_values.append(np.sqrt(vx**2 + vy**2))
+            # 计算运动信息
+            dir_mean = 0.0
+            velocity = 0.0
             
-            dir_mean = np.mean(dir_angles) if dir_angles else 0.0
-            v_mean = np.mean(vel_values) if vel_values else 0.0
-            
-            # 计算速度标量 (像素/秒)
-            if self.last["timestamp"] is not None and self.next["timestamp"] is not None:
-                dt = abs(self.next["timestamp"] - self.last["timestamp"])
-                velocity = v_mean / dt if dt > 0 else 0.0
-            else:
-                velocity = 0.0
+            if self.flow is not None and len(points_final_ys) > 0:
+                flow_at_points = self.flow[points_final_ys, points_final_xs]
+                
+                # 计算方向
+                angles = np.arctan2(flow_at_points[:, 1], flow_at_points[:, 0]) * 180 / np.pi
+                angles[angles < 0] += 360
+                
+                # 过滤掉静止点（速度很小的点）
+                speeds = np.sqrt(flow_at_points[:, 0]**2 + flow_at_points[:, 1]**2)
+                moving_mask = speeds > 0.1
+                
+                if np.sum(moving_mask) > 0:
+                    dir_mean = np.mean(angles[moving_mask])
+                    v_mean = np.mean(speeds[moving_mask])
+                    
+                    # 转换为实际速度（像素/秒）
+                    if self.last["timestamp"] is not None and self.next["timestamp"] is not None:
+                        dt = abs(self.next["timestamp"] - self.last["timestamp"])
+                        velocity = v_mean / dt if dt > 0 else 0.0
+                else:
+                    dir_mean = np.mean(angles)
+                    v_mean = np.mean(speeds)
+                    if self.last["timestamp"] is not None and self.next["timestamp"] is not None:
+                        dt = abs(self.next["timestamp"] - self.last["timestamp"])
+                        velocity = v_mean / dt if dt > 0 else 0.0
             
             ob_id = self._id_()
             self.last["ob"][ob_id] = {
